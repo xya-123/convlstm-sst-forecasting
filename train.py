@@ -33,6 +33,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hidden-dims", type=int, nargs="+", default=[16, 16])
     parser.add_argument("--cnn-hidden-dim", type=int, default=32)
     parser.add_argument("--kernel-size", type=int, default=3)
+    parser.add_argument(
+        "--residual-readout-init-std",
+        type=float,
+        default=0.0,
+        help=(
+            "Residual-head weight std. Zero exactly starts as persistence; a tiny "
+            "positive value lets gradients reach ConvLSTM on the first batch."
+        ),
+    )
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--patience", type=int, default=20)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
@@ -56,11 +65,18 @@ def parse_args() -> argparse.Namespace:
 
 
 def make_model(args: argparse.Namespace) -> tuple[torch.nn.Module, dict[str, Any]]:
-    if args.model in {"convlstm", "residual-convlstm"}:
+    if args.model == "convlstm":
         kwargs: dict[str, Any] = {
             "input_dim": 1,
             "hidden_dims": args.hidden_dims,
             "kernel_size": args.kernel_size,
+        }
+    elif args.model == "residual-convlstm":
+        kwargs = {
+            "input_dim": 1,
+            "hidden_dims": args.hidden_dims,
+            "kernel_size": args.kernel_size,
+            "readout_init_std": args.residual_readout_init_std,
         }
     else:
         kwargs = {
@@ -197,6 +213,12 @@ def main() -> None:
         raise ValueError("batch-size, epochs, and patience must be positive.")
     if args.learning_rate <= 0 or args.weight_decay < 0:
         raise ValueError("learning-rate must be positive and weight-decay cannot be negative.")
+    if args.residual_readout_init_std < 0:
+        raise ValueError("residual-readout-init-std cannot be negative.")
+    if args.model != "residual-convlstm" and args.residual_readout_init_std != 0:
+        raise ValueError(
+            "residual-readout-init-std is only valid for --model residual-convlstm."
+        )
     if args.lr_scheduler == "plateau":
         if args.min_learning_rate < 0 or args.min_learning_rate > args.learning_rate:
             raise ValueError(

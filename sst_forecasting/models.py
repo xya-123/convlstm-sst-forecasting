@@ -88,8 +88,9 @@ class ResidualConvLSTMForecaster(ConvLSTMForecaster):
 
     The returned tensor is still the next-day SST in normalized units.  Only the
     internal parameterization changes: the ConvLSTM readout represents a daily
-    increment, which is added to the final input frame.  Zero-initializing the
-    readout makes the initial network exactly equal to persistence forecasting.
+    increment, which is added to the final input frame.  The readout can be
+    zero-initialized for exact persistence or initialized with tiny random
+    weights so gradients reach the recurrent backbone on the first batch.
     """
 
     def __init__(
@@ -97,12 +98,19 @@ class ResidualConvLSTMForecaster(ConvLSTMForecaster):
         input_dim: int = 1,
         hidden_dims: Sequence[int] = (16, 16),
         kernel_size: int = 3,
+        readout_init_std: float = 0.0,
     ) -> None:
         if input_dim != 1:
             raise ValueError("ResidualConvLSTMForecaster currently requires input_dim=1.")
+        if readout_init_std < 0:
+            raise ValueError("readout_init_std cannot be negative.")
         super().__init__(input_dim, hidden_dims, kernel_size)
-        nn.init.zeros_(self.readout.weight)
+        if readout_init_std == 0:
+            nn.init.zeros_(self.readout.weight)
+        else:
+            nn.init.normal_(self.readout.weight, mean=0.0, std=readout_init_std)
         nn.init.zeros_(self.readout.bias)
+        self.model_config["readout_init_std"] = float(readout_init_std)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         correction = super().forward(x)

@@ -93,6 +93,27 @@ class ModelTests(unittest.TestCase):
         )
         self.assertIsInstance(model, ResidualConvLSTMForecaster)
 
+    def test_small_random_readout_starts_backbone_gradient_immediately(self) -> None:
+        torch.manual_seed(7)
+        model = ResidualConvLSTMForecaster(
+            input_dim=1,
+            hidden_dims=(2,),
+            kernel_size=3,
+            readout_init_std=1e-3,
+        )
+        sequence = torch.randn(2, 3, 1, 4, 4)
+        target = torch.randn(2, 1, 4, 4)
+        loss = torch.nn.functional.mse_loss(model(sequence), target)
+        loss.backward()
+        backbone_gradient = model.cells[0].gates.weight.grad
+        self.assertIsNotNone(backbone_gradient)
+        self.assertGreater(float(backbone_gradient.abs().sum()), 0.0)
+        self.assertTrue(torch.allclose(model.readout.bias, torch.zeros_like(model.readout.bias)))
+
+    def test_residual_readout_init_is_stored_in_model_config(self) -> None:
+        model = ResidualConvLSTMForecaster(readout_init_std=1e-3)
+        self.assertEqual(model.model_config["readout_init_std"], 1e-3)
+
 
 class MetricTests(unittest.TestCase):
     def test_masked_mse_ignores_land(self) -> None:

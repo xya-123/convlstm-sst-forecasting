@@ -236,6 +236,38 @@ python train.py \
 `history.csv` 会记录每轮实际使用的 `learning_rate`。模型选择始终只依据验证损失，
 测试集不参与学习率调整或早停。
 
+### R3：恢复较大学习率并启动主干梯度
+
+R2 表明从 `3e-4` 开始并持续降低学习率会让模型停留在近似常数变化预测。
+R3 恢复 R1 已验证有效的固定 `1e-3`，并将残差输出头从严格全零改为标准差
+`1e-3` 的极小随机初始化。
+
+全零输出头虽然能让初始模型严格等于持续性预测，但第一批数据反向传播时，梯度无法
+穿过零权重到达 ConvLSTM 主体。极小随机初始化仍使初始修正接近 0，同时让循环主体
+从第一批数据开始学习。
+
+```bash
+python train.py \
+  --data data/processed/sst_2020_east_china_sea.npz \
+  --model residual-convlstm \
+  --residual-readout-init-std 1e-3 \
+  --normalization minmax \
+  --loss-mask ocean \
+  --seq-len 10 \
+  --batch-size 4 \
+  --hidden-dims 16 16 \
+  --epochs 200 \
+  --patience 20 \
+  --learning-rate 1e-3 \
+  --lr-scheduler none \
+  --seed 42 \
+  --amp \
+  --run-name residual-convlstm-r3-gradient-start-t10-seed42
+```
+
+`--residual-readout-init-std 0` 保留原来的严格持续性初始化，可用于复现 R1/R2。
+R3 与 R1 只有残差头初始化不同；若 R3 有效，再在 R4 中单独加入延迟学习率衰减。
+
 ## 11. 测试与持续性基线
 
 ```bash
@@ -277,6 +309,7 @@ Skill < 0：模型不如直接使用最后一天
 | C4 | ConvLSTM | Min-Max | 无 | 10 |
 | R1 | Residual ConvLSTM | Min-Max | 有 | 10 |
 | R2 | Residual ConvLSTM + LR 衰减 | Min-Max | 有 | 10 |
+| R3 | Residual ConvLSTM + 小随机残差头 | Min-Max | 有 | 10 |
 
 掩码消融实验使用：
 
@@ -334,5 +367,6 @@ ConvLSTM 参考实现：
 - `research/improved-baseline`：规范化研究版本；
 - 已完成：可信 ConvLSTM 基线，测试 RMSE 0.2841℃，未超过持续性基线 0.2760℃；
 - 已完成：R1 Residual ConvLSTM 获得 +2.87% 测试 Skill，但预测日变化幅度偏弱；
-- 当前目标：R2 使用更低学习率和验证集驱动的衰减，改善局部日变化学习；
+- 已完成：R2 低初始学习率实验失败，测试 Skill -2.20%，变化幅度比仅 0.011；
+- 当前目标：R3 恢复学习率 0.001，并用极小随机残差头启动主干梯度；
 - 后续目标：进行归一化、掩码和时间窗口消融实验。
