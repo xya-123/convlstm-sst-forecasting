@@ -1,6 +1,8 @@
+import math
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
 import numpy as np
 import torch
@@ -14,6 +16,7 @@ from sst_forecasting.models import (
     build_model,
 )
 from prepare_data import collect_daily_files
+from train import make_lr_scheduler
 
 
 class DataTests(unittest.TestCase):
@@ -111,6 +114,46 @@ class MetricTests(unittest.TestCase):
         self.assertAlmostEqual(result["persistence_rmse_celsius"], 2.0)
         self.assertAlmostEqual(result["skill_vs_persistence"], 0.5)
         self.assertEqual(result["ocean_pixel_count"], 1)
+
+    def test_daily_change_diagnostics_detect_scale_and_correlation(self) -> None:
+        persistence = torch.zeros(1, 1, 1, 4)
+        target = torch.tensor([[[[-2.0, -1.0, 1.0, 2.0]]]])
+        prediction = target * 0.5
+        mask = torch.ones_like(target, dtype=torch.bool)
+        accumulator = MetricAccumulator()
+        accumulator.update(prediction, target, persistence, mask)
+        result = accumulator.compute()
+        self.assertAlmostEqual(result["daily_change_correlation"], 1.0)
+        self.assertAlmostEqual(result["daily_change_variability_ratio"], 0.5)
+        self.assertAlmostEqual(result["observed_daily_change_mean_celsius"], 0.0)
+        self.assertAlmostEqual(result["predicted_daily_change_mean_celsius"], 0.0)
+
+    def test_daily_change_correlation_is_nan_for_constant_prediction(self) -> None:
+        persistence = torch.zeros(1, 1, 1, 3)
+        target = torch.tensor([[[[-1.0, 0.0, 1.0]]]])
+        prediction = torch.zeros_like(target)
+        mask = torch.ones_like(target, dtype=torch.bool)
+        accumulator = MetricAccumulator()
+        accumulator.update(prediction, target, persistence, mask)
+        result = accumulator.compute()
+        self.assertTrue(math.isnan(result["daily_change_correlation"]))
+
+
+class TrainingUtilityTests(unittest.TestCase):
+    def test_plateau_scheduler_reduces_learning_rate(self) -> None:
+        parameter = torch.nn.Parameter(torch.tensor(1.0))
+        optimizer = torch.optim.Adam([parameter], lr=3e-4)
+        args = SimpleNamespace(
+            lr_scheduler="plateau",
+            lr_factor=0.5,
+            lr_patience=0,
+            min_learning_rate=1e-5,
+        )
+        scheduler = make_lr_scheduler(optimizer, args)
+        self.assertIsNotNone(scheduler)
+        scheduler.step(1.0)
+        scheduler.step(1.0)
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 1.5e-4)
 
 
 if __name__ == "__main__":

@@ -36,6 +36,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--patience", type=int, default=20)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
+    parser.add_argument(
+        "--lr-scheduler",
+        choices=("none", "plateau"),
+        default="none",
+        help="Reduce the learning rate when validation loss stops improving.",
+    )
+    parser.add_argument("--lr-patience", type=int, default=6)
+    parser.add_argument("--lr-factor", type=float, default=0.5)
+    parser.add_argument("--min-learning-rate", type=float, default=1e-5)
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)
@@ -60,6 +69,23 @@ def make_model(args: argparse.Namespace) -> tuple[torch.nn.Module, dict[str, Any
             "hidden_dim": args.cnn_hidden_dim,
         }
     return build_model(args.model, **kwargs), kwargs
+
+
+def make_lr_scheduler(
+    optimizer: torch.optim.Optimizer,
+    args: argparse.Namespace,
+) -> torch.optim.lr_scheduler.ReduceLROnPlateau | None:
+    if args.lr_scheduler == "none":
+        return None
+    return torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="min",
+        factor=args.lr_factor,
+        patience=args.lr_patience,
+        threshold=1e-10,
+        threshold_mode="abs",
+        min_lr=args.min_learning_rate,
+    )
 
 
 def selected_mask(ocean_mask: torch.Tensor, mode: str) -> torch.Tensor:
@@ -110,7 +136,7 @@ def validate(
     device: torch.device,
     use_amp: bool,
     loss_mask_mode: str,
-) -> tuple[float, dict[str, float]]:
+) -> tuple[float, dict[str, float | int]]:
     model.eval()
     normalized_squared_error = 0.0
     selected_count = 0
@@ -156,7 +182,7 @@ def create_loaders(
     }
 
 
-def save_history(path: Path, history: list[dict[str, float]]) -> None:
+def save_history(path: Path, history: list[dict[str, float | int]]) -> None:
     if not history:
         return
     with path.open("w", newline="", encoding="utf-8") as file:
@@ -169,6 +195,17 @@ def main() -> None:
     args = parse_args()
     if args.batch_size < 1 or args.epochs < 1 or args.patience < 1:
         raise ValueError("batch-size, epochs, and patience must be positive.")
+    if args.learning_rate <= 0 or args.weight_decay < 0:
+        raise ValueError("learning-rate must be positive and weight-decay cannot be negative.")
+    if args.lr_scheduler == "plateau":
+        if args.min_learning_rate < 0 or args.min_learning_rate > args.learning_rate:
+            raise ValueError(
+                "min-learning-rate must be non-negative and cannot exceed learning-rate."
+            )
+        if args.lr_patience < 0 or not 0.0 < args.lr_factor < 1.0:
+            raise ValueError(
+                "lr-patience must be non-negative and lr-factor must be between 0 and 1."
+            )
 
     set_reproducible_seed(args.seed)
     device = resolve_device(args.device)
@@ -191,6 +228,7 @@ def main() -> None:
     optimizer = torch.optim.Adam(
         model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay
     )
+    lr_scheduler = make_lr_scheduler(optimizer, args)
     amp_scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
     run_name = args.run_name or (
@@ -218,12 +256,13 @@ def main() -> None:
     print(f"Scaler: {sst_scaler.state_dict()}")
     print(f"Parameters: {sum(parameter.numel() for parameter in model.parameters()):,}")
 
-    history: list[dict[str, float]] = []
+    history: list[dict[str, float | int]] = []
     best_val_loss = math.inf
     best_epoch = 0
     epochs_without_improvement = 0
 
     for epoch in range(1, args.epochs + 1):
+        learning_rate = float(optimizer.param_groups[0]["lr"])
         train_loss = train_one_epoch(
             model, loaders["train"], optimizer, amp_scaler, device, use_amp, args.loss_mask
         )
@@ -232,6 +271,7 @@ def main() -> None:
         )
         row = {
             "epoch": float(epoch),
+            "learning_rate": learning_rate,
             "train_loss_normalized": train_loss,
             "val_loss_normalized": val_loss,
             **val_metrics,
@@ -240,10 +280,20 @@ def main() -> None:
         save_history(run_dir / "history.csv", history)
 
         print(
-            f"Epoch {epoch:03d} | train={train_loss:.6f} | val={val_loss:.6f} | "
+            f"Epoch {epoch:03d} | lr={learning_rate:.2e} | "
+            f"train={train_loss:.6f} | val={val_loss:.6f} | "
             f"RMSE={val_metrics['rmse_celsius']:.4f} degC | "
             f"skill={val_metrics['skill_vs_persistence']:.4f}"
         )
+
+        if lr_scheduler is not None:
+            lr_scheduler.step(val_loss)
+            next_learning_rate = float(optimizer.param_groups[0]["lr"])
+            if next_learning_rate < learning_rate:
+                print(
+                    f"Learning rate reduced: {learning_rate:.2e} -> "
+                    f"{next_learning_rate:.2e}"
+                )
 
         if val_loss < best_val_loss - 1e-10:
             best_val_loss = val_loss

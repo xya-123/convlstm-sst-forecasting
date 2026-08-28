@@ -187,6 +187,15 @@ def main() -> None:
         f"Skill:            {result['skill_vs_persistence']:.4f} "
         f"({result['rmse_improvement_percent']:+.2f}%)"
     )
+    print(f"Change corr.:     {result['daily_change_correlation']:.4f}")
+    print(
+        f"Change std ratio: {result['daily_change_variability_ratio']:.4f} "
+        "(prediction / observation)"
+    )
+    print(
+        f"Mean daily change: observed={result['observed_daily_change_mean_celsius']:+.4f}, "
+        f"predicted={result['predicted_daily_change_mean_celsius']:+.4f} degC"
+    )
     print(f"Saved evaluation: {output_dir}")
 
 

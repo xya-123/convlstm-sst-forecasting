@@ -206,6 +206,36 @@ python train.py \
   --run-name residual-convlstm-minmax-t10-seed42
 ```
 
+### R2：降低学习率并自动衰减
+
+R1 在第 10 轮取得最佳结果，之后验证损失明显震荡。R2 保持数据、模型和掩码不变，
+只调整优化过程：初始学习率降为 `3e-4`，验证损失停滞 6 轮后学习率减半，最低降到
+`1e-5`，早停等待增加到 40 轮。
+
+```bash
+python train.py \
+  --data data/processed/sst_2020_east_china_sea.npz \
+  --model residual-convlstm \
+  --normalization minmax \
+  --loss-mask ocean \
+  --seq-len 10 \
+  --batch-size 4 \
+  --hidden-dims 16 16 \
+  --epochs 300 \
+  --patience 40 \
+  --learning-rate 3e-4 \
+  --lr-scheduler plateau \
+  --lr-patience 6 \
+  --lr-factor 0.5 \
+  --min-learning-rate 1e-5 \
+  --seed 42 \
+  --amp \
+  --run-name residual-convlstm-r2-minmax-t10-seed42
+```
+
+`history.csv` 会记录每轮实际使用的 `learning_rate`。模型选择始终只依据验证损失，
+测试集不参与学习率调整或早停。
+
 ## 11. 测试与持续性基线
 
 ```bash
@@ -223,6 +253,9 @@ python evaluate.py \
 - 持续性预测 RMSE（直接用最后一天预测第 11 天）；
 - 持续性预测 MAE（℃）；
 - Skill：`1 - model_rmse / persistence_rmse`；
+- 真实与预测日变化的 Pearson 相关系数；
+- 日变化标准差之比（预测标准差 / 真实标准差）；
+- 真实与预测的平均日变化（℃）；
 - 测试样本数和首尾日期；
 - 若干日期的海温图、真实/预测日变化图和绝对误差图。
 
@@ -243,6 +276,7 @@ Skill < 0：模型不如直接使用最后一天
 | C3 | ConvLSTM | Z-score | 有 | 10 |
 | C4 | ConvLSTM | Min-Max | 无 | 10 |
 | R1 | Residual ConvLSTM | Min-Max | 有 | 10 |
+| R2 | Residual ConvLSTM + LR 衰减 | Min-Max | 有 | 10 |
 
 掩码消融实验使用：
 
@@ -299,5 +333,6 @@ ConvLSTM 参考实现：
 - `teacher-original`：老师提供的初始版本；
 - `research/improved-baseline`：规范化研究版本；
 - 已完成：可信 ConvLSTM 基线，测试 RMSE 0.2841℃，未超过持续性基线 0.2760℃；
-- 当前目标：检验 Residual ConvLSTM 能否在完全相同的测试协议下获得正 Skill；
+- 已完成：R1 Residual ConvLSTM 获得 +2.87% 测试 Skill，但预测日变化幅度偏弱；
+- 当前目标：R2 使用更低学习率和验证集驱动的衰减，改善局部日变化学习；
 - 后续目标：进行归一化、掩码和时间窗口消融实验。
