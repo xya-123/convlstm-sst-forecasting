@@ -83,6 +83,32 @@ class ConvLSTMForecaster(nn.Module):
         return self.readout(layer_input[:, -1])
 
 
+class ResidualConvLSTMForecaster(ConvLSTMForecaster):
+    """Predict the change from the latest observation instead of the full SST field.
+
+    The returned tensor is still the next-day SST in normalized units.  Only the
+    internal parameterization changes: the ConvLSTM readout represents a daily
+    increment, which is added to the final input frame.  Zero-initializing the
+    readout makes the initial network exactly equal to persistence forecasting.
+    """
+
+    def __init__(
+        self,
+        input_dim: int = 1,
+        hidden_dims: Sequence[int] = (16, 16),
+        kernel_size: int = 3,
+    ) -> None:
+        if input_dim != 1:
+            raise ValueError("ResidualConvLSTMForecaster currently requires input_dim=1.")
+        super().__init__(input_dim, hidden_dims, kernel_size)
+        nn.init.zeros_(self.readout.weight)
+        nn.init.zeros_(self.readout.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        correction = super().forward(x)
+        return x[:, -1] + correction
+
+
 class CNNForecaster(nn.Module):
     """Baseline that treats the temporal dimension as input channels."""
 
@@ -111,6 +137,8 @@ class CNNForecaster(nn.Module):
 def build_model(name: str, **kwargs: object) -> nn.Module:
     if name == "convlstm":
         return ConvLSTMForecaster(**kwargs)
+    if name == "residual-convlstm":
+        return ResidualConvLSTMForecaster(**kwargs)
     if name == "cnn":
         return CNNForecaster(**kwargs)
-    raise ValueError("Unknown model. Choose 'convlstm' or 'cnn'.")
+    raise ValueError("Unknown model. Choose 'convlstm', 'residual-convlstm', or 'cnn'.")

@@ -6,8 +6,13 @@ import numpy as np
 import torch
 
 from sst_forecasting.data import SSTScaler, build_datasets
-from sst_forecasting.metrics import masked_mse
-from sst_forecasting.models import CNNForecaster, ConvLSTMForecaster
+from sst_forecasting.metrics import MetricAccumulator, masked_mse
+from sst_forecasting.models import (
+    CNNForecaster,
+    ConvLSTMForecaster,
+    ResidualConvLSTMForecaster,
+    build_model,
+)
 from prepare_data import collect_daily_files
 
 
@@ -73,6 +78,18 @@ class ModelTests(unittest.TestCase):
         output = model(torch.zeros(1, 2, 1, 4, 4))
         self.assertTrue(torch.allclose(output, torch.full_like(output, 20.0)))
 
+    def test_residual_convlstm_starts_as_persistence(self) -> None:
+        model = ResidualConvLSTMForecaster(input_dim=1, hidden_dims=(2,), kernel_size=3)
+        sequence = torch.randn(2, 3, 1, 4, 4)
+        output = model(sequence)
+        self.assertTrue(torch.allclose(output, sequence[:, -1]))
+
+    def test_residual_model_can_be_built_by_name(self) -> None:
+        model = build_model(
+            "residual-convlstm", input_dim=1, hidden_dims=(2,), kernel_size=3
+        )
+        self.assertIsInstance(model, ResidualConvLSTMForecaster)
+
 
 class MetricTests(unittest.TestCase):
     def test_masked_mse_ignores_land(self) -> None:
@@ -80,6 +97,20 @@ class MetricTests(unittest.TestCase):
         target = torch.tensor([[[[1.0, 0.0]]]])
         mask = torch.tensor([[[[True, False]]]])
         self.assertAlmostEqual(float(masked_mse(prediction, target, mask)), 1.0)
+
+    def test_accumulator_compares_model_and_persistence_on_same_mask(self) -> None:
+        prediction = torch.tensor([[[[2.0, 100.0]]]])
+        target = torch.tensor([[[[1.0, 0.0]]]])
+        persistence = torch.tensor([[[[3.0, -100.0]]]])
+        mask = torch.tensor([[[[True, False]]]])
+        accumulator = MetricAccumulator()
+        accumulator.update(prediction, target, persistence, mask)
+        result = accumulator.compute()
+        self.assertAlmostEqual(result["rmse_celsius"], 1.0)
+        self.assertAlmostEqual(result["bias_celsius"], 1.0)
+        self.assertAlmostEqual(result["persistence_rmse_celsius"], 2.0)
+        self.assertAlmostEqual(result["skill_vs_persistence"], 0.5)
+        self.assertEqual(result["ocean_pixel_count"], 1)
 
 
 if __name__ == "__main__":

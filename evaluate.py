@@ -31,29 +31,56 @@ def parse_args() -> argparse.Namespace:
 def plot_examples(examples: list[dict[str, object]], path: Path) -> None:
     if not examples:
         return
-    figure, axes = plt.subplots(len(examples), 4, figsize=(15, 3.6 * len(examples)), squeeze=False)
-    for row, example in enumerate(examples):
+
+    prepared: list[dict[str, object]] = []
+    temperature_values: list[np.ndarray] = []
+    change_values: list[np.ndarray] = []
+    error_values: list[np.ndarray] = []
+    for example in examples:
         mask = np.asarray(example["mask"], dtype=bool)
         previous = np.where(mask, np.asarray(example["previous"]), np.nan)
         target = np.where(mask, np.asarray(example["target"]), np.nan)
         prediction = np.where(mask, np.asarray(example["prediction"]), np.nan)
-        error = np.where(mask, np.abs(prediction - target), np.nan)
-
-        temperature_values = np.concatenate(
-            [previous[np.isfinite(previous)], target[np.isfinite(target)], prediction[np.isfinite(prediction)]]
+        observed_change = target - previous
+        predicted_change = prediction - previous
+        error = np.abs(prediction - target)
+        prepared.append(
+            {
+                **example,
+                "previous": previous,
+                "target": target,
+                "prediction": prediction,
+                "observed_change": observed_change,
+                "predicted_change": predicted_change,
+                "error": error,
+            }
         )
-        vmin, vmax = np.percentile(temperature_values, [1, 99])
+        temperature_values.extend(
+            [values[np.isfinite(values)] for values in (previous, target, prediction)]
+        )
+        change_values.extend(
+            [values[np.isfinite(values)] for values in (observed_change, predicted_change)]
+        )
+        error_values.append(error[np.isfinite(error)])
+
+    all_temperatures = np.concatenate(temperature_values)
+    all_changes = np.concatenate(change_values)
+    all_errors = np.concatenate(error_values)
+    temperature_min, temperature_max = np.percentile(all_temperatures, [1, 99])
+    change_limit = max(float(np.percentile(np.abs(all_changes), 99)), 0.1)
+    error_max = max(float(np.percentile(all_errors, 99)), 0.1)
+
+    figure, axes = plt.subplots(
+        len(examples), 6, figsize=(22, 3.6 * len(examples)), squeeze=False
+    )
+    for row, example in enumerate(prepared):
         panels = (
-            (previous, "Previous day", "RdYlBu_r", vmin, vmax),
-            (target, "Ground truth", "RdYlBu_r", vmin, vmax),
-            (prediction, "Model prediction", "RdYlBu_r", vmin, vmax),
-            (
-                error,
-                "Absolute error",
-                "magma",
-                0.0,
-                max(float(np.nanpercentile(error, 99)), 1e-6),
-            ),
+            (example["previous"], "Previous day", "RdYlBu_r", temperature_min, temperature_max),
+            (example["target"], "Ground truth", "RdYlBu_r", temperature_min, temperature_max),
+            (example["prediction"], "Model prediction", "RdYlBu_r", temperature_min, temperature_max),
+            (example["observed_change"], "Observed daily change", "RdBu_r", -change_limit, change_limit),
+            (example["predicted_change"], "Predicted daily change", "RdBu_r", -change_limit, change_limit),
+            (example["error"], "Absolute error", "magma", 0.0, error_max),
         )
         for column, (image, title, cmap, lower, upper) in enumerate(panels):
             axis = axes[row, column]
@@ -140,6 +167,9 @@ def main() -> None:
             "normalization": checkpoint["normalization"],
             "loss_mask": checkpoint["loss_mask"],
             "best_epoch": int(checkpoint["best_epoch"]),
+            "test_sample_count": len(test_dataset),
+            "test_start_date": str(loaded.dates[int(split["val_end"])]),
+            "test_end_date": str(loaded.dates[int(split["n_days"]) - 1]),
         }
     )
 
@@ -150,8 +180,13 @@ def main() -> None:
 
     print(f"Model RMSE:       {result['rmse_celsius']:.4f} degC")
     print(f"Model MAE:        {result['mae_celsius']:.4f} degC")
+    print(f"Model bias:       {result['bias_celsius']:+.4f} degC")
     print(f"Persistence RMSE: {result['persistence_rmse_celsius']:.4f} degC")
-    print(f"Skill:            {result['skill_vs_persistence']:.4f}")
+    print(f"Persistence MAE:  {result['persistence_mae_celsius']:.4f} degC")
+    print(
+        f"Skill:            {result['skill_vs_persistence']:.4f} "
+        f"({result['rmse_improvement_percent']:+.2f}%)"
+    )
     print(f"Saved evaluation: {output_dir}")
 
 

@@ -19,7 +19,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train an SST forecasting model.")
     parser.add_argument("--data", type=Path, default=Path("data.npy"))
     parser.add_argument("--start-date", default=None, help="Required for dated legacy .npy files.")
-    parser.add_argument("--model", choices=("convlstm", "cnn"), default="convlstm")
+    parser.add_argument(
+        "--model",
+        choices=("convlstm", "residual-convlstm", "cnn"),
+        default="convlstm",
+    )
     parser.add_argument("--normalization", choices=("none", "minmax", "zscore"), default="minmax")
     parser.add_argument("--loss-mask", choices=("ocean", "all"), default="ocean")
     parser.add_argument("--seq-len", type=int, default=10)
@@ -43,7 +47,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def make_model(args: argparse.Namespace) -> tuple[torch.nn.Module, dict[str, Any]]:
-    if args.model == "convlstm":
+    if args.model in {"convlstm", "residual-convlstm"}:
         kwargs: dict[str, Any] = {
             "input_dim": 1,
             "hidden_dims": args.hidden_dims,

@@ -78,11 +78,11 @@ Y_batch: [B, C, H, W]
 ├── 2020/                         # 原始 OISST NetCDF 文件
 ├── data.npy                      # 老师版本生成的处理数据
 ├── prepare_data.py               # 日期校验、区域提取、生成规范 NPZ
-├── train.py                      # ConvLSTM/CNN 训练、验证、早停
+├── train.py                      # ConvLSTM/Residual ConvLSTM/CNN 训练、验证、早停
 ├── evaluate.py                   # 海洋指标、持续性基线、结果图
 ├── sst_forecasting/
 │   ├── data.py                   # 数据读取、归一化、滑动窗口、DataLoader
-│   ├── models.py                 # ConvLSTM 和普通卷积基线
+│   ├── models.py                 # ConvLSTM、残差 ConvLSTM 和普通卷积基线
 │   ├── metrics.py                # 掩码损失和物理单位指标
 │   └── utils.py                  # 随机种子、设备和文件工具
 ├── tests/test_core.py            # 张量形状、掩码、归一化测试
@@ -180,7 +180,33 @@ python train.py \
 
 CNN 会把 10 天当作 10 个输入通道，用于判断循环记忆是否真正带来收益。
 
-## 10. 测试与持续性基线
+## 10. 训练 Residual ConvLSTM
+
+普通 ConvLSTM 需要直接生成完整的下一日海温场，但相邻两日的 SST 通常非常相似。
+Residual ConvLSTM 改为学习日变化量：
+
+```text
+下一日预测 = 最后一个输入日 + ConvLSTM 预测的日变化量
+```
+
+其输出层初始化为 0，因此未经训练的初始预测严格等于持续性预测。训练命令：
+
+```bash
+python train.py \
+  --data data/processed/sst_2020_east_china_sea.npz \
+  --model residual-convlstm \
+  --normalization minmax \
+  --seq-len 10 \
+  --batch-size 4 \
+  --hidden-dims 16 16 \
+  --epochs 200 \
+  --patience 20 \
+  --seed 42 \
+  --amp \
+  --run-name residual-convlstm-minmax-t10-seed42
+```
+
+## 11. 测试与持续性基线
 
 ```bash
 python evaluate.py \
@@ -193,9 +219,12 @@ python evaluate.py \
 
 - 海洋格点 RMSE（℃）；
 - 海洋格点 MAE（℃）；
+- 模型平均偏差 Bias（℃）；
 - 持续性预测 RMSE（直接用最后一天预测第 11 天）；
+- 持续性预测 MAE（℃）；
 - Skill：`1 - model_rmse / persistence_rmse`；
-- 若干测试日期的真实图、预测图和绝对误差图。
+- 测试样本数和首尾日期；
+- 若干日期的海温图、真实/预测日变化图和绝对误差图。
 
 ```text
 Skill > 0：模型优于持续性预测
@@ -203,7 +232,7 @@ Skill = 0：与持续性预测相同
 Skill < 0：模型不如直接使用最后一天
 ```
 
-## 11. 核心实验矩阵
+## 12. 核心实验矩阵
 
 | 编号 | 模型 | 归一化 | 海洋掩码 | 窗口 |
 |---|---|---|---|---:|
@@ -213,6 +242,7 @@ Skill < 0：模型不如直接使用最后一天
 | C2 | ConvLSTM | Min-Max | 有 | 10 |
 | C3 | ConvLSTM | Z-score | 有 | 10 |
 | C4 | ConvLSTM | Min-Max | 无 | 10 |
+| R1 | Residual ConvLSTM | Min-Max | 有 | 10 |
 
 掩码消融实验使用：
 
@@ -232,7 +262,7 @@ python train.py ... --loss-mask ocean
 3、5、7、10、14、30
 ```
 
-## 12. 数据划分
+## 13. 数据划分
 
 默认按目标日期进行时间顺序划分：
 
@@ -252,7 +282,7 @@ python train.py ... --loss-mask ocean
 2022：测试
 ```
 
-## 13. 原始代码与引用
+## 14. 原始代码与引用
 
 ConvLSTM 参考实现：
 
@@ -264,8 +294,10 @@ ConvLSTM 参考实现：
 - NOAA/NCEI 1/4° Daily Optimum Interpolation Sea Surface Temperature (OISST), Version 2.1；
 - https://www.ncei.noaa.gov/products/optimum-interpolation-sst
 
-## 14. 开发状态
+## 15. 开发状态
 
 - `teacher-original`：老师提供的初始版本；
 - `research/improved-baseline`：规范化研究版本；
-- 当前目标：先建立可信基线，再进行归一化、掩码和时间窗口消融实验。
+- 已完成：可信 ConvLSTM 基线，测试 RMSE 0.2841℃，未超过持续性基线 0.2760℃；
+- 当前目标：检验 Residual ConvLSTM 能否在完全相同的测试协议下获得正 Skill；
+- 后续目标：进行归一化、掩码和时间窗口消融实验。

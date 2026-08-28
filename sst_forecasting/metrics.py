@@ -21,7 +21,9 @@ def masked_mse(
 class MetricAccumulator:
     squared_error: float = 0.0
     absolute_error: float = 0.0
+    signed_error: float = 0.0
     persistence_squared_error: float = 0.0
+    persistence_absolute_error: float = 0.0
     count: int = 0
 
     def update(
@@ -36,7 +38,9 @@ class MetricAccumulator:
         persistence_error = persistence[valid] - target[valid]
         self.squared_error += float((error**2).sum().item())
         self.absolute_error += float(error.abs().sum().item())
+        self.signed_error += float(error.sum().item())
         self.persistence_squared_error += float((persistence_error**2).sum().item())
+        self.persistence_absolute_error += float(persistence_error.abs().sum().item())
         self.count += int(valid.sum().item())
 
     def compute(self) -> dict[str, float]:
@@ -44,12 +48,17 @@ class MetricAccumulator:
             raise ValueError("No valid ocean pixels were accumulated.")
         rmse = (self.squared_error / self.count) ** 0.5
         mae = self.absolute_error / self.count
+        bias = self.signed_error / self.count
         persistence_rmse = (self.persistence_squared_error / self.count) ** 0.5
+        persistence_mae = self.persistence_absolute_error / self.count
         skill = 1.0 - rmse / persistence_rmse if persistence_rmse > 0 else float("nan")
         return {
             "rmse_celsius": rmse,
             "mae_celsius": mae,
+            "bias_celsius": bias,
             "persistence_rmse_celsius": persistence_rmse,
+            "persistence_mae_celsius": persistence_mae,
             "skill_vs_persistence": skill,
-            "ocean_pixel_count": float(self.count),
+            "rmse_improvement_percent": 100.0 * skill,
+            "ocean_pixel_count": self.count,
         }
