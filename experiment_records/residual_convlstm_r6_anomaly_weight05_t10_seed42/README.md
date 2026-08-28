@@ -1,87 +1,47 @@
-# Residual ConvLSTM R6: local-change anomaly weight 0.5
+# R6：局部异常损失权重 0.5 与检查点问题
 
-R6 tests an intermediate local daily-change anomaly weight. It keeps the R3
-data, split, model, initialization, learning rate, mask, and seed fixed, and
-changes only `change_anomaly_weight` from 0 to 0.5.
+R6 使用中间权重 `0.5`，其余设置与 R3/R5 一致。这个实验的最终价值不是得到最好测试分数，而是暴露了“整体精度和空间结构学习速度不同”以及单一检查点的缺陷。
 
-## Configuration
+## 保存检查点的测试结果
 
-| Setting | Value |
-| --- | ---: |
-| Change-anomaly weight | 0.5 |
-| Residual readout initialization std | 0.001 |
-| Learning rate | 0.001 |
-| LR scheduler | None |
-| Early-stopping patience | 20 |
-| Sequence length | 10 days |
-| Seed | 42 |
-
-## Saved-checkpoint test result
-
-| Metric | R3 (weight 0) | R6 (weight 0.5) | R4 (weight 1.0) |
+| 指标 | R3（权重 0） | R6（权重 0.5） | R4（权重 1.0） |
 | --- | ---: | ---: | ---: |
-| RMSE | **0.266321 °C** | 0.266534 °C | 0.270073 °C |
-| MAE | **0.172299 °C** | 0.172580 °C | 0.177451 °C |
-| Skill vs. persistence | **+3.52%** | +3.44% | +2.16% |
-| Bias | +0.035944 °C | **+0.032786 °C** | +0.078063 °C |
-| Predicted change mean | -0.045302 °C | -0.048460 °C | -0.003184 °C |
-| Change variability ratio | 0.003840 | 0.017718 | **0.233842** |
-| Change correlation | -0.074835 | -0.141690 | **+0.201355** |
+| RMSE | **0.266321 ℃** | 0.266534 ℃ | 0.270073 ℃ |
+| MAE | **0.172299 ℃** | 0.172580 ℃ | 0.177451 ℃ |
+| Skill | **+3.52%** | +3.44% | +2.16% |
+| Bias | +0.035944 ℃ | **+0.032786 ℃** | +0.078063 ℃ |
+| 变化幅度比 | 0.003840 | 0.017718 | **0.233842** |
+| 变化相关性 | -0.074835 | -0.141690 | **+0.201355** |
 
-The saved R6 checkpoint retains almost all of R3's whole-field accuracy and
-has the smallest bias of these three experiments. However, its predicted local
-change amplitude is only 1.77% of the observed amplitude and its change
-correlation remains negative. The example maps therefore still resemble an
-almost spatially uniform correction.
+第 2 轮保存模型仍接近 R3：整体精度好，但空间变化幅度只有真实值的 1.77%，相关性为负。
 
-## Early-stopping and checkpoint diagnosis
+## 第 2 轮与第 22 轮
 
-The program did not terminate at epoch 2. Epoch 2 became the best combined
-objective, then training continued through epoch 22 and stopped after 20
-epochs without a new combined-objective minimum.
+程序训练到第 22 轮才早停，并不是第 2 轮就结束。
 
-| Validation diagnostic | Epoch 2 (saved) | Epoch 22 (not saved) |
+| 验证指标 | 第 2 轮（保存） | 第 22 轮（未保存） |
 | --- | ---: | ---: |
-| RMSE | **0.230775 °C** | 0.250580 °C |
+| RMSE | **0.230775 ℃** | 0.250580 ℃ |
 | Skill | **+2.96%** | -5.37% |
-| Change variability ratio | 0.017393 | **0.048823** |
-| Change correlation | -0.078624 | **+0.070160** |
-| Change-anomaly loss | 0.0000419675 | **0.0000416224** |
+| 变化幅度比 | 0.017393 | **0.048823** |
+| 变化相关性 | -0.078624 | **+0.070160** |
+| 异常损失 | 0.0000419675 | **0.0000416224** |
 
-Epoch 22 simultaneously has the run's lowest validation anomaly loss, highest
-change correlation, and highest change variability ratio. Thus the local
-spatial task was still improving when early stopping activated. At the same
-time, its mean forecast and RMSE were much worse, so selecting epoch 2 is
-correct under the current single combined-objective rule.
+第 22 轮同时取得本次训练最低的异常损失、最高变化幅度和最高相关性，且相关性首次转正。这说明局部空间任务仍在改善；但平均预测和 RMSE 变差，所以单一组合目标仍选择第 2 轮。
 
-This exposes an experiment-design limitation rather than an arithmetic bug:
-one `best.pt` cannot represent both the best whole-field forecast and the best
-local-change forecast. The current example image only shows the epoch-2 model;
-the epoch-22 weights were not retained and cannot be tested without rerunning.
+旧代码只保存 `best.pt`，第 22 轮权重没有保留，无法直接在测试集上评估。
 
-## Conclusion and required trainer change
+## 本实验得到的经验
 
-R6 does not establish that weight 0.5 is ineffective. It establishes that
-whole-field accuracy is learned much earlier than local spatial dynamics and
-dominates the current checkpoint/early-stopping decision.
+1. 平均升降温在前几轮学会，局部空间结构需要二十轮以上。
+2. 第 2 轮检查点适合整体 RMSE，但不能代表模型后期的空间能力。
+3. 这不是损失计算 Bug，而是单一早停目标和单检查点不足以描述多目标问题。
+4. 下一步应增加最少训练轮数，同时保存最佳目标、RMSE、异常损失、相关性和最后一轮。
+5. 重跑时保持权重 0.5，才能单独验证训练时长与检查点机制。
 
-Before further weight sweeps, the trainer should:
+## 文件
 
-1. support a minimum epoch count before early stopping;
-2. save separate best-objective, best-RMSE, best-anomaly, and
-   best-change-correlation checkpoints;
-3. save the final checkpoint;
-4. keep all model selection on validation data, never test data.
-
-The first rerun should retain weight 0.5 and use the revised checkpoint policy,
-so the effect of training duration and selection can be isolated from the loss
-weight.
-
-## Files
-
-- `config.json`: exact R6 configuration
-- `history.csv`: all 22 training epochs and validation diagnostics
-- `metrics.json`: test result from the saved epoch-2 checkpoint
-- `examples.png`: maps from the saved epoch-2 checkpoint
-
-The large model checkpoints remain outside Git.
+- `config.json`：R6 配置；
+- `history.csv`：22 轮训练历史；
+- `metrics.json`：第 2 轮检查点测试指标；
+- `examples.png`：第 2 轮模型图像。

@@ -1,99 +1,133 @@
-# ConvLSTM 海表温度预测研究
+# 基于 Residual ConvLSTM 的海表温度次日预测
 
-本项目使用 NOAA OISST 日尺度海表温度（Sea Surface Temperature, SST）数据，研究 ConvLSTM 对下一日海温空间分布的预测能力，并系统比较归一化、海洋掩码、历史窗口长度和基线模型对结果的影响。
+本项目使用 NOAA OISST 日尺度海表温度（Sea Surface Temperature, SST）数据，研究如何根据连续 10 天的海温场预测下一天海温。项目从老师提供的 ConvLSTM 复现代码出发，重建了可复现的数据、训练和评估流程，并针对强持续性基线、局部变化塌缩和过早停止等问题进行了受控改进。
 
-> 当前研究版由老师提供的复现代码整理而来。原始脚本仍保留在仓库根目录，正式实验统一使用 `prepare_data.py`、`train.py` 和 `evaluate.py`。
+当前核心实验已经完成：**R3 是整体温度误差最低的模型，R7 是兼顾整体精度与局部海温变化的推荐模型。**
 
-## 1. 研究主线
+## 项目亮点
 
-核心问题：
+- 按真实日期排序并检查重复、缺失和不连续日期；
+- 归一化参数只由训练期数据计算，避免数据泄漏；
+- 陆地 NaN 不参与损失和指标，所有主要结果只统计有效海洋格点；
+- 使用 persistence（直接用最后一天预测下一天）作为强基线；
+- 将直接预测完整海温场改为 Residual ConvLSTM 预测日变化量；
+- 增加局部日变化异常损失，避免模型只学习全海域统一升降温；
+- 增加最少训练轮数和多指标检查点，保留后期才形成的空间变化能力；
+- 保存完整配置、逐轮历史、物理单位指标和可视化结果。
 
-1. ConvLSTM 能否优于“明天等于今天”的持续性预测？
-2. ConvLSTM 是否优于直接把多天海温作为通道输入的普通卷积模型？
-3. 无归一化、Min-Max 归一化和 Z-score 标准化对训练稳定性与预测误差有何影响？
-4. 将陆地 NaN 填 0 并计入损失，与使用海洋掩码相比会产生多大偏差？
-5. 使用 3、5、7、10、14 或 30 天历史数据时，下一日预测效果如何变化？
+## 研究任务
 
-推荐研究题目：
-
-> 归一化、海洋掩码与时间窗口长度对 ConvLSTM 海表温度预测性能的影响
-
-## 2. 公平实验原则
-
-每组对比实验必须尽量只改变一个变量：
-
-- 固定相同的空间区域和日期范围；
-- 固定训练集、验证集和测试集的时间边界；
-- 归一化参数只能由训练期数据计算；
-- 测试指标只在有效海洋格点上计算；
-- 归一化与未归一化模型使用相同的无界线性输出层；
-- 使用相同的随机种子、优化器和早停规则；
-- 至少与持续性预测比较；
-- 最终关键实验建议使用 3 个随机种子，报告均值和标准差。
-
-## 3. 数据含义
-
-OISST 是 NOAA 发布的 0.25° 日尺度最优插值海温产品。每天的 `.nc` 文件包含一张规则经纬度网格上的海温分析场，并非某个固定时刻的原始卫星照片。
-
-当前区域：
-
-- 经度：100°E–132°E；
-- 纬度：16°N–48°N；
-- 空间大小：128×128；
-- 2020 年共有 366 天。
-
-一天的数据可以表示为 `[H, W] = [128, 128]`。一个 10 天预测样本为：
+一天的 SST 数据是一张二维海温网格。默认任务使用前 10 天预测第 11 天：
 
 ```text
-X: [T, C, H, W] = [10, 1, 128, 128]
-Y: [C, H, W]    = [1, 128, 128]
+输入 X：[B, T, C, H, W] = [B, 10, 1, 128, 128]
+目标 Y：[B, C, H, W]    = [B, 1, 128, 128]
 ```
 
-训练时 DataLoader 再增加 batch 维：
+其中 `B` 是 batch size，`T` 是时间长度，`C=1` 表示海温通道。
+
+默认数据范围和划分：
+
+| 项目 | 设置 |
+| --- | --- |
+| 数据 | NOAA OISST V2.1，2020 年日尺度数据 |
+| 空间区域 | 100°E–132°E，16°N–48°N |
+| 网格大小 | 128×128 |
+| 日期数量 | 366 天 |
+| 训练/验证/测试样本 | 246 / 73 / 37 |
+| 测试日期 | 2020-11-25 至 2020-12-31 |
+| 归一化 | 训练集全局 Min-Max |
+| 损失与指标区域 | 有效海洋格点 |
+
+数据按目标日期顺序划分，验证集和测试集可以使用分界点之前已经观测到的历史海温，但标签日期不会跨集合重复。
+
+## 方法
+
+### Persistence 基线
+
+海温相邻两天通常非常接近，因此最重要的基线不是随机预测，而是：
 
 ```text
-X_batch: [B, T, C, H, W]
-Y_batch: [B, C, H, W]
+下一日预测 = 最后一个输入日
 ```
 
-## 4. 研究版解决的原始问题
+如果模型不能超过 persistence，就不能证明它学到了有用的次日变化。
 
-老师提供的原始代码适合展示基本流程，但存在以下会影响实验可信度的问题：
+### Residual ConvLSTM
 
-1. 按完整路径字符串排序文件，月份可能变成 `1, 10, 11, 12, 2, ...`；
-2. 未验证重复日期、缺失日期和时间连续性；
-3. 将陆地 NaN 当作 0℃ 并计入 MSE/RMSE；
-4. 最后一层直接使用 `tanh` 限制的隐藏状态，未归一化时无法表示真实温度范围；
-5. 整个训练集一次送入 GPU，显存被时间步激活占用；
-6. 训练、验证、测试数据全部提前放入 GPU；
-7. 没有保存验证集最优模型、早停、训练历史和随机种子；
-8. 没有持续性预测和普通卷积基线；
-9. 只报告一个包含陆地的整体 RMSE；
-10. 模型、数据处理、训练和评估重复写在同一个脚本中。
-
-## 5. 项目结构
+直接 ConvLSTM 需要重新生成完整海温场，而真正需要学习的主要是相邻两日的小变化。Residual ConvLSTM 改为：
 
 ```text
-.
-├── 2020/                         # 原始 OISST NetCDF 文件
-├── data.npy                      # 老师版本生成的处理数据
-├── prepare_data.py               # 日期校验、区域提取、生成规范 NPZ
-├── train.py                      # ConvLSTM/Residual ConvLSTM/CNN 训练、验证、早停
-├── evaluate.py                   # 海洋指标、持续性基线、结果图
-├── sst_forecasting/
-│   ├── data.py                   # 数据读取、归一化、滑动窗口、DataLoader
-│   ├── models.py                 # ConvLSTM、残差 ConvLSTM 和普通卷积基线
-│   ├── metrics.py                # 掩码损失和物理单位指标
-│   └── utils.py                  # 随机种子、设备和文件工具
-├── tests/test_core.py            # 张量形状、掩码、归一化测试
-├── requirements.txt
-├── ConvLSTM_pytorch-master/      # 上游参考实现与 MIT License
-└── convlstm_*.py                 # 老师提供的 legacy 脚本
+下一日预测 = 最后一个输入日 + ConvLSTM 预测的日变化量
 ```
 
-## 6. 环境安装
+残差输出头采用标准差 `1e-3` 的小随机初始化，使初始预测接近 persistence，同时从第一批数据开始就能把梯度传入 ConvLSTM 主体。
 
-推荐 Python 3.10 或 3.11。服务器上的 PyTorch 应根据 CUDA 版本使用官方安装命令，随后安装其余依赖：
+### 局部日变化异常损失
+
+仅优化完整海温 MSE 时，模型可能只学会全海域统一升温或降温。为强调局部冷暖结构，项目增加：
+
+```text
+日变化 = 下一日海温 - 最后一个输入日海温
+局部异常 = 日变化 - 当天海洋格点平均日变化
+总损失 = 海温预测 MSE + λ × 局部异常 MSE
+```
+
+R7 使用 `λ=0.5`。
+
+### 最少训练轮数与多检查点
+
+实验发现，平均升降温通常在前几轮学会，而局部空间结构到约第 22 轮才开始形成。最终训练器支持：
+
+- `--min-epochs`：达到指定轮数前不触发早停；
+- `best_objective.pt`：验证集组合目标最低；
+- `best_rmse.pt`：验证集 RMSE 最低；
+- `best_anomaly.pt`：验证集局部异常损失最低；
+- `best_correlation.pt`：验证集日变化相关性最高；
+- `last.pt`：训练最后一轮；
+- `best.pt`：兼容旧命令，等同于最佳组合目标检查点。
+
+模型选择只使用验证集，测试集不参与调参、早停或检查点选择。
+
+## 主要结果
+
+所有表格均采用相同的时间划分、海洋掩码和物理单位评估协议。
+
+| 实验 | 主要变化 | RMSE（℃） | MAE（℃） | Skill | 变化幅度比 | 变化相关性 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Persistence | 最后一天直接预测下一天 | 0.276034 | 0.181800 | 0% | — | — |
+| 直接 ConvLSTM | 直接生成下一日完整海温 | 0.284106 | 0.188126 | -2.92% | — | — |
+| R1 | Residual ConvLSTM | 0.268121 | 0.173600 | +2.87% | — | — |
+| R2 | 低学习率与持续衰减 | 0.282119 | 0.188824 | -2.20% | 0.0110 | -0.1490 |
+| R3 | 小随机残差头，精度导向 | **0.266321** | **0.172299** | **+3.52%** | 0.0038 | -0.0748 |
+| R4 | 异常损失权重 1.0 | 0.270073 | 0.177451 | +2.16% | 0.2338 | **+0.2014** |
+| R5 | 异常损失权重 0.25 | 0.266385 | 0.172371 | +3.50% | 0.0085 | -0.1330 |
+| R6 | 异常损失权重 0.5，旧早停 | 0.266534 | 0.172580 | +3.44% | 0.0177 | -0.1417 |
+| **R7** | **权重 0.5 + 最少 50 轮 + 多检查点** | **0.268501** | **0.175043** | **+2.73%** | **0.2606** | **+0.1859** |
+
+指标解释：
+
+- `Skill = 1 - 模型 RMSE / persistence RMSE`，大于 0 表示超过 persistence；
+- 变化幅度比为“预测日变化标准差 / 真实日变化标准差”，越接近 1 越好；
+- 变化相关性衡量预测与真实局部冷暖变化的一致程度。
+
+### 最终结论
+
+1. **直接 ConvLSTM 没有超过 persistence。** 海温次日预测必须认真对待强持续性基线。
+2. **Residual ConvLSTM 明显更适合该任务。** R1 首次获得正 Skill，证明学习日变化比重建完整海温更有效。
+3. **较低学习率并不一定更稳定或更优。** R2 的低学习率和持续衰减使模型停留在接近 persistence 的弱修正状态。
+4. **整体 RMSE 好不代表学会了空间变化。** R3 的 RMSE 最低，但预测变化幅度只有真实值的 0.384%，且相关性为负。
+5. **局部异常损失能够缓解空间塌缩。** R4 将变化幅度比提升到 0.234，并把相关性变为正数，但权重 1.0 带来更大暖偏差。
+6. **平均变化和局部空间变化的学习速度不同。** R5/R6 过早选择第 2 轮模型，丢失了第 22 轮以后逐渐形成的空间能力。
+7. **R7 是当前最佳综合模型。** 相比 R3，R7 的 RMSE 仅增加 0.82%，变化幅度提高约 67.9 倍，相关性由负转正，同时仍保持 +2.73% Skill。
+
+因此，本项目将 **R3 作为精度上限模型**，将 **R7 第 47 轮最佳组合目标/最佳 RMSE 检查点作为推荐主结果**。
+
+## 快速开始
+
+### 1. 安装环境
+
+推荐 Python 3.10 或 3.11。先按照服务器 CUDA 版本安装 PyTorch，再安装其余依赖：
 
 ```bash
 pip install -r requirements.txt
@@ -105,9 +139,9 @@ pip install -r requirements.txt
 python -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0))"
 ```
 
-## 7. 数据预处理
+### 2. 预处理数据
 
-### 7.1 从原始 NetCDF 重建规范数据
+仓库已经包含 2020 年原始 NetCDF 文件，可生成规范 NPZ：
 
 ```bash
 python prepare_data.py \
@@ -117,211 +151,11 @@ python prepare_data.py \
   --lat-min 16 --lat-max 48
 ```
 
-预处理会：
+预处理会按日期排序、检查重复和缺失日期、提取区域、保留陆地 NaN，并保存 `sst`、`dates`、`lon` 和 `lat`。
 
-1. 从文件名提取 8 位日期并按日期排序；
-2. 检查重复日期和缺失日期；
-3. 提取指定经纬度区域；
-4. 保留 NaN，不把陆地伪装成 0℃；
-5. 保存 `sst`、`dates`、`lon` 和 `lat`。
+老师提供的旧 `data.npy` 仍可通过 `--start-date 2020-01-01` 读取，但正式实验建议使用 NPZ。
 
-生成的 `sst` 形状统一为 `[day, height, width]`。
-
-### 7.2 兼容老师提供的 data.npy
-
-```bash
-python train.py --data data.npy --start-date 2020-01-01
-```
-
-研究版训练代码可直接读取现有 `data.npy`，但正式实验应优先使用重新按日期生成的 `.npz` 文件。
-
-## 8. 训练可信 ConvLSTM 基线
-
-RTX 4090 建议先从 batch size 4 或 8 开始：
-
-```bash
-python train.py \
-  --data data/processed/sst_2020_east_china_sea.npz \
-  --model convlstm \
-  --normalization minmax \
-  --seq-len 10 \
-  --batch-size 4 \
-  --hidden-dims 16 16 \
-  --epochs 200 \
-  --patience 20 \
-  --seed 42 \
-  --amp \
-  --run-name convlstm-minmax-t10-seed42
-```
-
-输出目录：
-
-```text
-outputs/convlstm-minmax-t10-seed42/
-├── best.pt                    # 最佳组合目标，兼容旧命令
-├── best_objective.pt          # 最佳组合目标
-├── best_rmse.pt               # 最佳验证 RMSE
-├── best_anomaly.pt            # 最佳局部异常损失
-├── best_correlation.pt        # 最佳变化相关性
-├── last.pt                    # 训练最后一轮
-├── config.json                # 完整实验配置
-└── history.csv                # 每轮训练、验证指标和最佳标记
-```
-
-## 9. 训练普通卷积基线
-
-```bash
-python train.py \
-  --data data/processed/sst_2020_east_china_sea.npz \
-  --model cnn \
-  --normalization minmax \
-  --seq-len 10 \
-  --batch-size 8 \
-  --epochs 200 \
-  --patience 20 \
-  --seed 42 \
-  --run-name cnn-minmax-t10-seed42
-```
-
-CNN 会把 10 天当作 10 个输入通道，用于判断循环记忆是否真正带来收益。
-
-## 10. 训练 Residual ConvLSTM
-
-普通 ConvLSTM 需要直接生成完整的下一日海温场，但相邻两日的 SST 通常非常相似。
-Residual ConvLSTM 改为学习日变化量：
-
-```text
-下一日预测 = 最后一个输入日 + ConvLSTM 预测的日变化量
-```
-
-其输出层初始化为 0，因此未经训练的初始预测严格等于持续性预测。训练命令：
-
-```bash
-python train.py \
-  --data data/processed/sst_2020_east_china_sea.npz \
-  --model residual-convlstm \
-  --normalization minmax \
-  --seq-len 10 \
-  --batch-size 4 \
-  --hidden-dims 16 16 \
-  --epochs 200 \
-  --patience 20 \
-  --seed 42 \
-  --amp \
-  --run-name residual-convlstm-minmax-t10-seed42
-```
-
-### R2：降低学习率并自动衰减
-
-R1 在第 10 轮取得最佳结果，之后验证损失明显震荡。R2 保持数据、模型和掩码不变，
-只调整优化过程：初始学习率降为 `3e-4`，验证损失停滞 6 轮后学习率减半，最低降到
-`1e-5`，早停等待增加到 40 轮。
-
-```bash
-python train.py \
-  --data data/processed/sst_2020_east_china_sea.npz \
-  --model residual-convlstm \
-  --normalization minmax \
-  --loss-mask ocean \
-  --seq-len 10 \
-  --batch-size 4 \
-  --hidden-dims 16 16 \
-  --epochs 300 \
-  --patience 40 \
-  --learning-rate 3e-4 \
-  --lr-scheduler plateau \
-  --lr-patience 6 \
-  --lr-factor 0.5 \
-  --min-learning-rate 1e-5 \
-  --seed 42 \
-  --amp \
-  --run-name residual-convlstm-r2-minmax-t10-seed42
-```
-
-`history.csv` 会记录每轮实际使用的 `learning_rate`。模型选择始终只依据验证损失，
-测试集不参与学习率调整或早停。
-
-### R3：恢复较大学习率并启动主干梯度
-
-R2 表明从 `3e-4` 开始并持续降低学习率会让模型停留在近似常数变化预测。
-R3 恢复 R1 已验证有效的固定 `1e-3`，并将残差输出头从严格全零改为标准差
-`1e-3` 的极小随机初始化。
-
-全零输出头虽然能让初始模型严格等于持续性预测，但第一批数据反向传播时，梯度无法
-穿过零权重到达 ConvLSTM 主体。极小随机初始化仍使初始修正接近 0，同时让循环主体
-从第一批数据开始学习。
-
-```bash
-python train.py \
-  --data data/processed/sst_2020_east_china_sea.npz \
-  --model residual-convlstm \
-  --residual-readout-init-std 1e-3 \
-  --normalization minmax \
-  --loss-mask ocean \
-  --seq-len 10 \
-  --batch-size 4 \
-  --hidden-dims 16 16 \
-  --epochs 200 \
-  --patience 20 \
-  --learning-rate 1e-3 \
-  --lr-scheduler none \
-  --seed 42 \
-  --amp \
-  --run-name residual-convlstm-r3-gradient-start-t10-seed42
-```
-
-`--residual-readout-init-std 0` 保留原来的严格持续性初始化，可用于复现 R1/R2。
-R3 与 R1 只有残差头初始化不同。
-
-### R4：增加局部日变化异常损失
-
-R3 的整体 RMSE 和 Skill 已经优于持续性预测，但预测日变化的空间标准差只有真实值的
-约 0.384%，说明改进主要来自接近全海域一致的平均降温修正。R4 保持 R3 的模型、
-初始化、学习率和数据划分不变，只增加局部日变化异常损失：
-
-```text
-日变化 = 下一日海温 - 最后一个输入日海温
-局部异常 = 日变化 - 当天海洋格点的平均日变化
-总损失 = 海温预测 MSE + 权重 × 局部异常 MSE
-```
-
-推荐先用权重 `1.0` 做单变量对照：
-
-```bash
-python train.py \
-  --data data/processed/sst_2020_east_china_sea.npz \
-  --model residual-convlstm \
-  --residual-readout-init-std 1e-3 \
-  --normalization minmax \
-  --loss-mask ocean \
-  --change-anomaly-weight 1.0 \
-  --seq-len 10 \
-  --batch-size 4 \
-  --hidden-dims 16 16 \
-  --epochs 200 \
-  --patience 20 \
-  --learning-rate 1e-3 \
-  --lr-scheduler none \
-  --num-workers 4 \
-  --seed 42 \
-  --device cuda \
-  --amp \
-  --output-root /home/dataDisk/sn/xya/convlstm-sst-runs \
-  --run-name residual-convlstm-r4-anomaly-loss-t10-seed42
-```
-
-`--change-anomaly-weight 0` 完全关闭新损失并复现旧训练目标。训练历史会分别记录总目标、
-原始预测 MSE 和局部异常 MSE，便于判断空间结构改善是否以整体 RMSE 变差为代价。
-R4 的最佳检查点、学习率调度（若启用）和早停均依据验证集“总损失”，测试集仍不参与
-模型选择。
-
-### R7：修复早停与多检查点诊断
-
-R5/R6 表明整体平均变化通常在前几轮学会，而局部空间结构需要二十轮以上才开始出现。
-只保存最佳组合损失会丢失后期空间能力。修订后的训练器支持 `--min-epochs`，并同时
-保存最佳组合目标、RMSE、异常损失、变化相关性和最后一轮模型。
-
-首先保持 R6 的权重 `0.5`，只改变训练与保存机制：
+### 3. 训练推荐的 R7
 
 ```bash
 python train.py \
@@ -343,127 +177,104 @@ python train.py \
   --seed 42 \
   --device cuda \
   --amp \
-  --output-root /home/dataDisk/sn/xya/convlstm-sst-runs \
-  --run-name residual-convlstm-r7-multicheckpoint-weight05-t10-seed42
+  --output-root outputs \
+  --run-name residual-convlstm-r7
 ```
 
-评估多个检查点时，每个检查点默认写入独立目录，例如
-`evaluation_best_rmse/` 和 `evaluation_best_correlation/`，不会相互覆盖。
+### 4. 评估检查点
 
-## 11. 测试与持续性基线
+推荐首先评估最佳组合目标：
 
 ```bash
 python evaluate.py \
-  --checkpoint outputs/convlstm-minmax-t10-seed42/best.pt \
+  --checkpoint outputs/residual-convlstm-r7/best_objective.pt \
   --data data/processed/sst_2020_east_china_sea.npz \
+  --device cuda \
+  --amp \
   --save-examples 3
 ```
 
-评估输出：
+也可以将检查点替换为 `best_rmse.pt`、`best_anomaly.pt`、`best_correlation.pt` 或 `last.pt`。每种检查点默认写入独立的 `evaluation_<checkpoint>/` 目录，不会覆盖其他评估结果。
 
-- 海洋格点 RMSE（℃）；
-- 海洋格点 MAE（℃）；
-- 模型平均偏差 Bias（℃）；
-- 持续性预测 RMSE（直接用最后一天预测第 11 天）；
-- 持续性预测 MAE（℃）；
-- Skill：`1 - model_rmse / persistence_rmse`；
-- 真实与预测日变化的 Pearson 相关系数；
-- 日变化标准差之比（预测标准差 / 真实标准差）；
-- 真实与预测的平均日变化（℃）；
-- 测试样本数和首尾日期；
-- 若干日期的海温图、真实/预测日变化图和绝对误差图。
+## 输出内容
 
 ```text
-Skill > 0：模型优于持续性预测
-Skill = 0：与持续性预测相同
-Skill < 0：模型不如直接使用最后一天
+outputs/<run-name>/
+├── config.json
+├── history.csv
+├── best.pt
+├── best_objective.pt
+├── best_rmse.pt
+├── best_anomaly.pt
+├── best_correlation.pt
+├── last.pt
+├── evaluation_best_objective/
+│   ├── metrics.json
+│   └── examples.png
+└── ...
 ```
 
-## 12. 核心实验矩阵
+`examples.png` 包含前一天、真实下一天、模型预测、真实日变化、预测日变化和绝对误差。
 
-| 编号 | 模型 | 归一化 | 海洋掩码 | 窗口 |
-|---|---|---|---|---:|
-| B0 | 持续性预测 | 无要求 | 有 | 10 |
-| B1 | CNN | Min-Max | 有 | 10 |
-| C1 | ConvLSTM | 无 | 有 | 10 |
-| C2 | ConvLSTM | Min-Max | 有 | 10 |
-| C3 | ConvLSTM | Z-score | 有 | 10 |
-| C4 | ConvLSTM | Min-Max | 无 | 10 |
-| R1 | Residual ConvLSTM | Min-Max | 有 | 10 |
-| R2 | Residual ConvLSTM + LR 衰减 | Min-Max | 有 | 10 |
-| R3 | Residual ConvLSTM + 小随机残差头 | Min-Max | 有 | 10 |
-| R4 | R3 + 局部日变化异常损失 | Min-Max | 有 | 10 |
-| R5 | R3 + 异常损失权重 0.25 | Min-Max | 有 | 10 |
-| R6 | R3 + 异常损失权重 0.5 | Min-Max | 有 | 10 |
-| R7 | R6 + 最少50轮与多检查点 | Min-Max | 有 | 10 |
+## 项目结构
 
-掩码消融实验使用：
+```text
+.
+├── 2020/                         # 原始 OISST NetCDF 数据
+├── prepare_data.py               # 日期校验、区域提取和 NPZ 生成
+├── train.py                      # 训练、验证、早停和多检查点保存
+├── evaluate.py                   # 测试指标和可视化
+├── sst_forecasting/
+│   ├── data.py                   # 数据读取、归一化、滑动窗口
+│   ├── models.py                 # ConvLSTM、Residual ConvLSTM、CNN
+│   ├── metrics.py                # 掩码损失、Skill 和日变化指标
+│   └── utils.py                  # 随机种子、设备和文件工具
+├── tests/test_core.py            # 核心单元测试
+├── experiment_records/           # 可版本控制的实验配置、指标和图片
+├── ConvLSTM_pytorch-master/      # 上游 ConvLSTM 参考实现
+├── convlstm_*.py                 # 老师提供的旧版脚本
+└── requirements.txt
+```
+
+## 实验记录
+
+根 README 只总结最终项目，具体受控改动、失败原因和逐轮经验保存在各实验目录：
+
+| 实验 | 说明 |
+| --- | --- |
+| [直接 ConvLSTM 基线](experiment_records/convlstm_minmax_t10_seed42/) | 可信评估流程下未超过 persistence |
+| [R1](experiment_records/residual_convlstm_minmax_t10_seed42/) | Residual ConvLSTM 首次超过 persistence |
+| [R2](experiment_records/residual_convlstm_r2_low_lr_t10_seed42/) | 低学习率与持续衰减失败 |
+| [R3](experiment_records/residual_convlstm_r3_gradient_start_t10_seed42/) | 小随机残差头，整体精度最佳 |
+| [R4](experiment_records/residual_convlstm_r4_anomaly_weight1_t10_seed42/) | 强异常损失恢复空间变化 |
+| [R5](experiment_records/residual_convlstm_r5_anomaly_weight025_t10_seed42/) | 异常损失权重过弱 |
+| [R6](experiment_records/residual_convlstm_r6_anomaly_weight05_t10_seed42/) | 发现过早停止和单检查点问题 |
+| [R7](experiment_records/residual_convlstm_r7_multicheckpoint_weight05_t10_seed42/) | 最少训练轮数与多检查点，最终综合模型 |
+
+实验目录保留小型 `config.json`、`history.csv`、`metrics.json` 和图片；大型模型权重通过 `.gitignore` 排除。
+
+## 测试
 
 ```bash
-python train.py ... --loss-mask all
+python -m unittest discover -s tests -v
 ```
 
-正式海洋结果使用默认设置：
+测试覆盖日期排序、训练期归一化、时间划分、张量形状、Residual 初始化、掩码损失、日变化诊断、异常损失、学习率调度和最少训练轮数逻辑。
 
-```bash
-python train.py ... --loss-mask ocean
-```
+## 局限与可选扩展
 
-时间窗口实验只改变 `--seq-len`：
+当前结论基于 2020 年数据、一个时间划分和随机种子 42，适合完成本次小型复现与改进项目，但不应直接解释为跨年份、跨海域的普遍结论。后续可选扩展包括：
 
-```text
-3、5、7、10、14、30
-```
+- 使用多个随机种子报告均值和标准差；
+- 使用多年数据进行独立年份验证和测试；
+- 系统比较 Min-Max、Z-score 和无归一化；
+- 进行海洋掩码和时间窗口长度消融；
+- 引入风场、海流、海表高度等外部物理变量。
 
-## 13. 数据划分
+## 数据、引用与许可证说明
 
-默认按目标日期进行时间顺序划分：
+- 数据：NOAA/NCEI 1/4° Daily Optimum Interpolation Sea Surface Temperature (OISST), Version 2.1；
+- ConvLSTM：Shi et al., 2015, *Convolutional LSTM Network: A Machine Learning Approach for Precipitation Nowcasting*；
+- 参考实现：Andrea Palazzi, `ndrplz/ConvLSTM_pytorch`。
 
-```text
-前 70% 日期：训练目标
-中间 20% 日期：验证目标
-最后 10% 日期：测试目标
-```
-
-验证和测试样本可以使用边界之前已经观测到的历史海温作为输入，但标签日期不会跨集合重复。这符合“一天前预报”场景。
-
-如果以后使用多年数据，建议固定同一区域，并采用独立年份划分，例如：
-
-```text
-2013–2020：训练
-2021：验证
-2022：测试
-```
-
-## 14. 原始代码与引用
-
-ConvLSTM 参考实现：
-
-- Andrea Palazzi, `ndrplz/ConvLSTM_pytorch`，MIT License；
-- Shi et al., 2015, *Convolutional LSTM Network: A Machine Learning Approach for Precipitation Nowcasting*。
-
-数据来源：
-
-- NOAA/NCEI 1/4° Daily Optimum Interpolation Sea Surface Temperature (OISST), Version 2.1；
-- https://www.ncei.noaa.gov/products/optimum-interpolation-sst
-
-## 15. 开发状态
-
-- `teacher-original`：老师提供的初始版本；
-- `research/improved-baseline`：规范化研究版本；
-- 已完成：可信 ConvLSTM 基线，测试 RMSE 0.2841℃，未超过持续性基线 0.2760℃；
-- 已完成：R1 Residual ConvLSTM 获得 +2.87% 测试 Skill，但预测日变化幅度偏弱；
-- 已完成：R2 低初始学习率实验失败，测试 Skill -2.20%，变化幅度比仅 0.011；
-- 已完成：R3 用极小随机残差头获得当前最佳 RMSE 0.2663℃ 和 +3.52% Skill，
-  但日变化空间幅度仍严重塌缩；
-- 已完成：R4 使用异常损失权重 1.0，将变化幅度比从 0.0038 提高到 0.2338，
-  相关系数由负转正，但测试 Skill 从 R3 的 +3.52% 降到 +2.16%；
-- 已完成：R5（权重 0.25）和 R6（权重 0.5）均在第 2 轮取得最佳组合损失，
-  保存模型基本保留 R3 精度，但局部变化仍塌缩；
-- 已发现：R6 到第 22 轮时验证变化相关性已由负转正且异常损失仍在改善，
-  但单一组合损失早停并未保留该阶段模型；
-- 已完成：R7 将相同的 R6 训练轨迹延长到 69 轮；空间相关性从第 22 轮起持续为正，
-  第 47 轮取得测试 RMSE 0.2685℃、Skill +2.73%、变化幅度比 0.2606、相关性 +0.1859；
-- 阶段结论：R3 是整体精度最优模型，R7 是兼顾正 Skill 与局部空间变化的最佳模型；
-- 当前状态：核心复现、问题诊断和受控改进已经完成，可以进入报告整理阶段；
-- 可选扩展：增加随机种子、多年份数据，以及归一化、掩码和时间窗口消融实验。
+`ConvLSTM_pytorch-master/` 中的上游参考实现保留其 MIT License。仓库其余研究代码目前未在根目录声明独立许可证；若计划公开复用或接受外部贡献，建议由仓库所有者补充根级许可证。

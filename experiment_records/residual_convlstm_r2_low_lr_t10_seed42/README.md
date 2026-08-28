@@ -1,27 +1,21 @@
-# Residual ConvLSTM R2: low learning rate + plateau scheduler
+# R2：低学习率与持续衰减实验（失败但有信息）
 
-R2 is a negative but informative optimization experiment. It keeps the R1
-data, split, architecture, normalization, mask, and seed fixed while changing
-the learning-rate strategy.
+R2 检验“R1 验证曲线震荡是否由学习率过大造成”。除优化策略外，数据、模型、归一化、掩码和随机种子均保持不变。
 
-## Controlled change from R1
+## 受控改动
 
-| Setting | R1 | R2 |
+| 设置 | R1 | R2 |
 | --- | ---: | ---: |
-| Initial learning rate | 0.001 | 0.0003 |
-| LR scheduler | None | ReduceLROnPlateau |
-| LR factor | — | 0.5 |
-| LR patience | — | 6 |
-| Minimum LR | — | 0.00001 |
-| Early-stopping patience | 20 | 40 |
+| 初始学习率 | 0.001 | 0.0003 |
+| 调度器 | 无 | ReduceLROnPlateau |
+| 衰减倍数 | — | 0.5 |
+| 调度 patience | — | 6 |
+| 最低学习率 | — | 0.00001 |
+| 早停 patience | 20 | 40 |
 
-All other main experiment settings remain unchanged: Residual ConvLSTM with
-hidden channels `[16, 16]`, min-max normalization, 10-day input, ocean-only
-loss/metrics, batch size 4, and seed 42.
+实际学习率轨迹：
 
-## Learning-rate trajectory
-
-| Epochs | Learning rate |
+| 轮次 | 学习率 |
 | --- | ---: |
 | 1–9 | 0.00030000 |
 | 10–16 | 0.00015000 |
@@ -30,50 +24,41 @@ loss/metrics, batch size 4, and seed 42.
 | 31–37 | 0.00001875 |
 | 38–42 | 0.00001000 |
 
-The best validation checkpoint occurred at epoch 2. No later epoch improved it,
-so early stopping activated at epoch 42. The scheduler executed as configured;
-the negative result is not caused by a missing LR update.
+调度器按设计运行，不存在“学习率没有更新”的代码问题。最佳检查点仍在第 2 轮，训练到第 42 轮早停。
 
-## Test result
+## 测试结果
 
-| Metric | R1 | R2 | Persistence |
+| 指标 | R1 | R2 | Persistence |
 | --- | ---: | ---: | ---: |
-| RMSE | **0.268121 °C** | 0.282119 °C | 0.276034 °C |
-| MAE | **0.173600 °C** | 0.188824 °C | 0.181800 °C |
-| Skill vs. persistence | **+2.87%** | **-2.20%** | 0% |
+| RMSE | **0.268121 ℃** | 0.282119 ℃ | 0.276034 ℃ |
+| MAE | **0.173600 ℃** | 0.188824 ℃ | 0.181800 ℃ |
+| Skill | **+2.87%** | **-2.20%** | 0% |
 
-Relative to R1, R2 worsens RMSE by 5.22% and MAE by 8.77%.
+相对 R1，R2 的 RMSE 恶化 5.22%，MAE 恶化 8.77%。
 
-## Daily-change diagnosis
+## 日变化诊断
 
-| Diagnostic | R2 test value |
+| 指标 | R2 |
 | --- | ---: |
-| Observed mean daily change | -0.081247 °C |
-| Predicted mean daily change | +0.017552 °C |
-| Observed daily-change standard deviation | 0.263807 °C |
-| Predicted daily-change standard deviation | 0.002897 °C |
-| Predicted/observed variability ratio | 0.010981 |
-| Daily-change correlation | -0.148977 |
+| 真实平均日变化 | -0.081247 ℃ |
+| 预测平均日变化 | +0.017552 ℃ |
+| 真实日变化标准差 | 0.263807 ℃ |
+| 预测日变化标准差 | 0.002897 ℃ |
+| 变化幅度比 | 0.010981 |
+| 变化相关性 | -0.148977 |
 
-The test period is cooling on average, but R2 predicts slight warming. Its
-predicted daily-change variability is only about 1.1% of the observed
-variability, and the changes are negatively correlated with observations. The
-maps confirm an almost spatially uniform weak warming correction instead of
-the observed local warm/cool structures.
+测试期整体在降温，R2 却预测轻微升温；空间变化幅度只有真实值约 1.1%，相关性为负。模型基本停留在 persistence 附近的弱修正状态。
 
-## Conclusion
+## 本实验得到的经验
 
-Lowering the initial learning rate from 0.001 to 0.0003 and then reducing it
-further does not improve this zero-readout-initialized residual model. R2 stays
-near the persistence solution and never obtains positive validation skill.
-The next controlled experiment should restore the proven initial learning rate
-of 0.001 and delay any reduction until after a longer validation plateau.
+1. 验证曲线震荡不等于应该直接降低学习率。
+2. 对零初始化残差头而言，较小学习率再持续衰减会进一步削弱主体学习。
+3. “增大学习率跳出局部最优”也不是由该结果直接支持的结论；应先修复梯度启动问题。
+4. 下一步恢复 `0.001`，并用极小随机残差头让 ConvLSTM 从第一批数据开始获得梯度。
 
-## Files
+## 文件
 
-- `config.json`: exact R2 configuration
-- `history.csv`: 42 epochs including the actual learning rate
-- `metrics.json`: test metrics and daily-change diagnostics
-- `examples.png`: SST, daily-change, and error maps
-
-The large model checkpoint remains outside Git.
+- `config.json`：R2 配置；
+- `history.csv`：42 轮历史及实际学习率；
+- `metrics.json`：测试指标和日变化诊断；
+- `examples.png`：海温、日变化和误差图。

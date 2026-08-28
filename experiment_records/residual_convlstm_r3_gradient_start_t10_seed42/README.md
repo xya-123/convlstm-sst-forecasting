@@ -1,94 +1,65 @@
-# Residual ConvLSTM R3: gradient-start readout initialization
+# R3：小随机残差头与整体精度最优模型
 
-R3 is the current best experiment by whole-field test RMSE and MAE. It keeps
-the R1 data, split, architecture, normalization, mask, seed, and learning rate
-fixed, while replacing the exactly zero-initialized residual readout with a
-small random initialization.
+R3 针对 R1/R2 的全零残差输出头进行受控修改：恢复学习率 `0.001`，并把残差读出层权重初始化为标准差 `0.001` 的极小随机数。
 
-## Controlled change from R1
+## 为什么修改初始化
 
-| Setting | R1 | R3 |
+当读出层权重严格为 0 时，第一批数据可以更新读出层本身，但传回 ConvLSTM 主体的梯度也会乘以 0。小随机初始化仍使初始预测非常接近 persistence，却能从第一批数据开始训练时序主体。
+
+| 设置 | R1/R2 | R3 |
 | --- | ---: | ---: |
-| Residual readout initialization | Exactly zero | Normal, std = 0.001 |
-| Initial learning rate | 0.001 | 0.001 |
-| LR scheduler | None | None |
-| Early-stopping patience | 20 | 20 |
+| 残差读出层初始化 | 全零 | 正态分布，std=0.001 |
+| 学习率 | R1: 0.001 / R2: 0.0003 | 0.001 |
+| 调度器 | 无或持续衰减 | 无 |
+| 早停 patience | 20/40 | 20 |
 
-All other main settings remain unchanged: Residual ConvLSTM with hidden
-channels `[16, 16]`, min-max normalization, 10-day input, ocean-only
-loss/metrics, batch size 4, and seed 42.
+## 训练行为
 
-The small nonzero readout allows gradients to reach the ConvLSTM backbone from
-the first batch. With an exactly zero readout, the first backward pass can
-update the readout itself but sends zero gradient through it to the backbone.
+R3 共训练 22 轮，最佳检查点位于第 2 轮，随后 20 轮未刷新验证目标而停止。
 
-## Training behavior
-
-Training stopped after 22 epochs because the best validation checkpoint was at
-epoch 2 and the following 20 epochs did not improve it.
-
-| Validation statistic | Value |
+| 验证指标 | 数值 |
 | --- | ---: |
-| Best epoch | 2 |
-| Best RMSE | 0.230720 °C |
-| Skill at best epoch | +2.99% |
-| Epochs with positive validation skill | 2, 6, 20 |
+| 最佳轮次 | 2 |
+| 最佳 RMSE | 0.230720 ℃ |
+| 最佳 Skill | +2.99% |
+| 正 Skill 轮次 | 2、6、20 |
 
-The later validation values oscillate substantially. Early stopping is working
-as configured; the short best epoch does not prove that the optimizer reached
-a bad local minimum, and increasing the learning rate is not justified by this
-run.
+最佳轮次较早不等于已经证明陷入局部最低点，也不构成继续增大学习率的依据。
 
-## Test result
+## 测试结果
 
-| Metric | R1 | R3 | Persistence |
+| 指标 | R1 | R3 | Persistence |
 | --- | ---: | ---: | ---: |
-| RMSE | 0.268121 °C | **0.266321 °C** | 0.276034 °C |
-| MAE | 0.173600 °C | **0.172299 °C** | 0.181800 °C |
-| Skill vs. persistence | +2.87% | **+3.52%** | 0% |
-| Mean error (bias) | — | +0.035944 °C | — |
+| RMSE | 0.268121 ℃ | **0.266321 ℃** | 0.276034 ℃ |
+| MAE | 0.173600 ℃ | **0.172299 ℃** | 0.181800 ℃ |
+| Skill | +2.87% | **+3.52%** | 0% |
+| Bias | +0.040008 ℃ | **+0.035944 ℃** | — |
 
-Relative to R1, R3 improves RMSE by 0.67%, improves MAE by 0.75%, and raises
-skill by 0.65 percentage points. It also clearly recovers from the failed R2
-low-learning-rate experiment (RMSE 0.282119 °C, skill -2.20%).
+R3 相对 R1 将 RMSE 降低 0.67%、MAE 降低 0.75%，是整个项目中整体海温误差最低的模型。
 
-## Daily-change diagnosis
+## 隐藏问题：空间变化塌缩
 
-| Diagnostic | R3 test value |
+| 日变化指标 | R3 |
 | --- | ---: |
-| Observed mean daily change | -0.081247 °C |
-| Predicted mean daily change | -0.045302 °C |
-| Observed daily-change standard deviation | 0.263807 °C |
-| Predicted daily-change standard deviation | 0.001013 °C |
-| Predicted/observed variability ratio | 0.003840 |
-| Daily-change correlation | -0.074835 |
+| 真实平均变化 | -0.081247 ℃ |
+| 预测平均变化 | -0.045302 ℃ |
+| 真实变化标准差 | 0.263807 ℃ |
+| 预测变化标准差 | 0.001013 ℃ |
+| 变化幅度比 | 0.003840 |
+| 变化相关性 | -0.074835 |
 
-R3 learns a useful average cooling correction, which is why its whole-field
-metrics beat persistence. However, the predicted daily-change maps remain
-nearly spatially uniform. Their variability is only 0.384% of the observed
-variability, and their correlation with observed local changes is negative.
+R3 学到了有用的平均降温修正，因此整体 RMSE 很好；但预测变化幅度仅为真实值的 0.384%，相关性为负，变化图几乎是空间常数。
 
-Therefore, positive skill does **not** mean that the model has learned the
-observed local warm/cool structures. Most of the gain currently comes from a
-global mean correction to persistence.
+## 本实验得到的经验
 
-## Conclusion and next controlled experiment
+1. 极小随机初始化解决了第一批数据的主体梯度阻塞，并带来当前最佳整体精度。
+2. 正 Skill 不能自动证明模型学会了局部动力学。
+3. 海温图的 10–30 ℃ 色标会掩盖不足 1 ℃ 的日变化，必须单独绘制变化图。
+4. 下一步瓶颈是训练目标：需要显式强调去除全海域平均值后的局部冷暖异常。
 
-Small random residual-readout initialization is retained because it gives the
-best overall result so far and fixes the first-batch gradient blockage of the
-zero-readout design. R3 is the new comparison checkpoint.
+## 文件
 
-The remaining bottleneck is the loss objective, not evidence of an excessively
-small learning rate. The next experiment should keep the R3 optimizer and
-initialization settings fixed, then add a loss term that explicitly penalizes
-errors in local daily-change anomalies. This tests whether the model can learn
-spatial change patterns without sacrificing its positive whole-field skill.
-
-## Files
-
-- `config.json`: exact R3 configuration
-- `history.csv`: 22 training epochs and validation metrics
-- `metrics.json`: test metrics and daily-change diagnostics
-- `examples.png`: SST, daily-change, and error maps
-
-The large model checkpoint remains outside Git.
+- `config.json`：R3 配置；
+- `history.csv`：22 轮训练历史；
+- `metrics.json`：测试指标和日变化诊断；
+- `examples.png`：海温、日变化和误差图。

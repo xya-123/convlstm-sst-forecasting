@@ -1,70 +1,58 @@
-# Residual ConvLSTM R1 (Min-Max, T=10, seed=42)
+# R1：Residual ConvLSTM 首次超过 Persistence
 
-This directory preserves the first Residual ConvLSTM experiment. It uses the
-same data split, normalization, ocean mask, model width, and test protocol as
-the archived direct ConvLSTM baseline.
+R1 将直接 ConvLSTM 改为 Residual ConvLSTM。在保持数据、划分、归一化、海洋掩码和网络宽度不变的条件下，只改变预测目标。
 
-## Setup
+## 受控改动
 
-- Model: Residual ConvLSTM, hidden channels `[16, 16]`
-- Forecast: `next SST = latest SST + predicted daily change`
-- Data: 366 daily SST grids from 2020
-- Samples: 246 train, 73 validation, 37 test
-- Test period: 2020-11-25 through 2020-12-31
-- Normalization: training-only global min-max
-- Sequence length: 10 days
-- Loss and metrics: valid ocean pixels only
-- Optimizer: Adam, learning rate 0.001, batch size 4
-- Early stopping: patience 20; training stopped at epoch 30
-- Best checkpoint: epoch 10
-- Seed: 42
+```text
+直接 ConvLSTM：下一日预测 = 网络直接生成完整海温场
+Residual ConvLSTM：下一日预测 = 最后一个输入日 + 网络预测的日变化量
+```
 
-## Test result
+残差输出头初始化为 0，因此未经训练时模型严格等于 persistence。
 
-| Metric | Residual ConvLSTM | Persistence | Relative result |
+## 实验设置
+
+| 项目 | 设置 |
+| --- | --- |
+| 模型 | 两层 Residual ConvLSTM，隐藏通道 `[16, 16]` |
+| 序列长度 | 10 天 |
+| 归一化 | 训练期全局 Min-Max |
+| 学习率 | 0.001 |
+| batch size | 4 |
+| 早停 | patience 20 |
+| 总训练轮数 | 30 |
+| 最佳轮次 | 10 |
+| 随机种子 | 42 |
+
+## 测试结果
+
+| 指标 | 直接 ConvLSTM | R1 | Persistence |
 | --- | ---: | ---: | ---: |
-| RMSE | **0.268121 °C** | 0.276034 °C | **2.87% better** |
-| MAE | **0.173600 °C** | 0.181800 °C | **4.51% better** |
+| RMSE | 0.284106 ℃ | **0.268121 ℃** | 0.276034 ℃ |
+| MAE | 0.188126 ℃ | **0.173600 ℃** | 0.181800 ℃ |
+| Skill | -2.92% | **+2.87%** | 0% |
 
-Additional model statistics:
+R1 相对直接 ConvLSTM 将 RMSE 降低 5.63%、MAE 降低 7.72%，并成为第一个在统一协议下超过 persistence 的学习模型。测试偏差为 `+0.040008 ℃`，存在轻微暖偏。
 
-- RMSE skill versus persistence: `+0.028668`
-- Mean bias: `+0.040008 °C` (slightly warm)
-- Ocean pixel count: 206,090
+## 训练与图像诊断
 
-Compared with the archived direct ConvLSTM (RMSE 0.284106 °C, MAE 0.188126
-°C), R1 improves RMSE by 5.63% and MAE by 7.72%.
+最佳检查点位于第 10 轮，随后训练到第 30 轮触发早停。第 14 和第 28 轮的验证 Skill 也为正，但没有超过第 10 轮。
 
-## Interpretation
+尽管整体指标转正，预测日变化图仍接近空间常数，而真实变化含有大量局部冷暖斑块。R1 主要学会了测试期的平均降温修正，还没有学会完整空间动力学。
 
-R1 is the first learned model in this project to beat persistence under the
-same ocean-only protocol. Validation skill at the selected epoch was +2.71%,
-close to the +2.87% test skill, so the gain is not confined to the test score.
+## 本实验得到的经验
 
-However, the predicted daily-change panels are nearly spatially uniform while
-the observed changes contain strong local warm/cool structures. The model has
-mainly learned a small systematic cooling correction rather than the full
-spatial dynamics. The positive skill is real but modest and is based on only
-one year, one chronological split, and one random seed.
+1. 学习相对前一天的变化量明显优于重新生成完整海温场。
+2. 正 Skill 说明残差修正确实有用，但提升幅度仍小，需要检查模型到底学了什么。
+3. 只报告 RMSE 不足以发现空间常数解，后续必须增加日变化标准差、相关性和均值诊断。
+4. 全零残差头虽然提供严格 persistence 初值，但第一批反向传播无法把梯度穿过零权重传入 ConvLSTM 主体。
 
-Epoch 10 was selected, but training continued through epoch 30. Early stopping
-then activated because none of the following 20 epochs improved on epoch 10.
-Validation skill was also positive at epochs 14 and 28, although lower than the
-best value. The fixed learning rate and oscillating validation curve motivate
-the next optimization experiment.
+## 文件
 
-## Files
+- `config.json`：R1 完整配置；
+- `history.csv`：30 轮训练历史；
+- `metrics.json`：统一测试指标；
+- `examples.png`：海温、日变化和误差图。
 
-- `config.json`: exact run configuration
-- `history.csv`: all 30 training epochs
-- `metrics.json`: final test metrics
-- `examples.png`: SST, daily-change, and error maps
-
-The large `best.pt` checkpoint remains outside Git.
-
-## Planned R2 changes
-
-1. Add validation-driven learning-rate reduction and record the learning rate.
-2. Use a lower initial learning rate and longer early-stopping patience.
-3. Add daily-change correlation, variability, bias, and RMSE diagnostics.
-4. After choosing settings on validation data, repeat with seeds 42, 43, and 44.
+大型检查点未纳入 Git。

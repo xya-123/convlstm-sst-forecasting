@@ -1,80 +1,55 @@
-# Residual ConvLSTM R5: local-change anomaly weight 0.25
+# R5：局部异常损失权重 0.25
 
-R5 tests a weak local daily-change anomaly term. It keeps the R3 data, split,
-model, initialization, learning rate, mask, and seed fixed, and changes only
-`change_anomaly_weight` from 0 to 0.25.
+R5 在 R3 设置上加入较弱的局部异常损失，检验能否在几乎不损失整体精度的情况下恢复空间变化。唯一主要变量是 `change_anomaly_weight=0.25`。
 
-## Configuration
+## 实验设置
 
-| Setting | Value |
+| 项目 | 数值 |
 | --- | ---: |
-| Change-anomaly weight | 0.25 |
-| Residual readout initialization std | 0.001 |
-| Learning rate | 0.001 |
-| LR scheduler | None |
-| Early-stopping patience | 20 |
-| Sequence length | 10 days |
-| Seed | 42 |
+| 异常损失权重 | 0.25 |
+| 残差头初始化 std | 0.001 |
+| 学习率 | 0.001 |
+| 序列长度 | 10 |
+| 早停 patience | 20 |
+| 随机种子 | 42 |
 
-## Saved-checkpoint test result
+## 测试结果
 
-| Metric | R3 (weight 0) | R5 (weight 0.25) | R4 (weight 1.0) |
+| 指标 | R3（权重 0） | R5（权重 0.25） | R4（权重 1.0） |
 | --- | ---: | ---: | ---: |
-| RMSE | **0.266321 °C** | 0.266385 °C | 0.270073 °C |
-| MAE | **0.172299 °C** | 0.172371 °C | 0.177451 °C |
-| Skill vs. persistence | **+3.52%** | +3.50% | +2.16% |
-| Bias | +0.035944 °C | **+0.034690 °C** | +0.078063 °C |
-| Predicted change mean | -0.045302 °C | -0.046557 °C | -0.003184 °C |
-| Change variability ratio | 0.003840 | 0.008548 | **0.233842** |
-| Change correlation | -0.074835 | -0.133021 | **+0.201355** |
+| RMSE | **0.266321 ℃** | 0.266385 ℃ | 0.270073 ℃ |
+| MAE | **0.172299 ℃** | 0.172371 ℃ | 0.177451 ℃ |
+| Skill | **+3.52%** | +3.50% | +2.16% |
+| Bias | +0.035944 ℃ | **+0.034690 ℃** | +0.078063 ℃ |
+| 变化幅度比 | 0.003840 | 0.008548 | **0.233842** |
+| 变化相关性 | -0.074835 | -0.133021 | **+0.201355** |
 
-R5 preserves nearly all of R3's whole-field performance: its RMSE is only
-0.024% worse and its skill is lower by only 0.023 percentage points. It also
-predicts the domain-mean cooling similarly to R3.
+R5 的 RMSE 只比 R3 高 0.024%，几乎完整保留整体精度；但变化幅度仍只有真实值的 0.855%，相关性反而更负，图像仍接近统一降温。
 
-However, the predicted local-change amplitude is still only 0.855% of the
-observed amplitude. Although this is 2.23 times the R3 ratio, the absolute
-amplitude remains negligible and the change correlation becomes more negative.
-The example maps confirm an almost spatially uniform cooling correction.
+## 训练诊断
 
-## Training and early-stopping diagnosis
+程序并非第 2 轮立即停止，而是第 2 轮成为最佳组合目标，随后继续训练到第 22 轮。
 
-The program did not terminate at epoch 2. Epoch 2 became the best combined
-objective, and training then continued to epoch 22 before the patience of 20
-epochs was exhausted.
-
-| Validation diagnostic | Epoch 2 (saved) | Epoch 22 (last) |
+| 验证指标 | 第 2 轮（保存） | 第 22 轮（最后） |
 | --- | ---: | ---: |
-| RMSE | **0.230719 °C** | 0.257904 °C |
+| RMSE | **0.230719 ℃** | 0.257904 ℃ |
 | Skill | **+2.99%** | -8.44% |
-| Change variability ratio | 0.008791 | **0.025063** |
-| Change correlation | -0.069535 | -0.038186 |
-| Change-anomaly loss | **0.0000418913** | 0.0000419364 |
+| 变化幅度比 | 0.008791 | **0.025063** |
+| 变化相关性 | -0.069535 | -0.038186 |
+| 异常损失 | **0.0000418913** | 0.0000419364 |
 
-Unlike R6, R5's final anomaly loss does not improve over epoch 2 and its
-correlation never becomes positive. The growing variation at epoch 22 is
-therefore not reliable evidence of learned spatial structure. Weight 0.25 is
-too weak under the present training setup to overcome the spatial-collapse
-solution.
+第 22 轮的相关性虽然稍微接近 0，但异常损失没有优于第 2 轮，整体预测也明显恶化，不能认为后期已经可靠学会空间结构。
 
-## Conclusion
+## 本实验得到的经验
 
-R5 is a useful accuracy-oriented negative result. It shows that merely adding
-a small anomaly-loss coefficient does not produce a meaningful compromise:
-the model behaves almost like R3 and retains positive skill, but local dynamics
-remain collapsed.
+1. 权重 0.25 对局部结构约束过弱，模型仍主要优化平均修正。
+2. 变化标准差略有增加不等于变化方向正确，必须同时看相关性。
+3. R5 是有价值的负结果：小权重不是自然的最佳折中。
+4. 下一步测试权重 0.5，并重点观察后期空间指标是否持续改善。
 
-R6 is the more appropriate experiment for diagnosing checkpoint selection,
-because its epoch-22 anomaly loss and correlation both improve while the
-whole-field forecast worsens. The next trainer revision should therefore be
-tested first by rerunning weight 0.5 with minimum epochs and multiple
-validation checkpoints.
+## 文件
 
-## Files
-
-- `config.json`: exact R5 configuration
-- `history.csv`: all 22 training epochs and validation diagnostics
-- `metrics.json`: test result from the saved epoch-2 checkpoint
-- `examples.png`: maps from the saved epoch-2 checkpoint
-
-The large model checkpoints remain outside Git.
+- `config.json`：R5 配置；
+- `history.csv`：22 轮历史；
+- `metrics.json`：第 2 轮保存模型的测试指标；
+- `examples.png`：第 2 轮模型的可视化。

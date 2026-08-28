@@ -1,96 +1,72 @@
-# Residual ConvLSTM R7: minimum epochs and multi-checkpoint selection
+# R7：最少训练轮数与多检查点（最终综合模型）
 
-R7 tests the checkpoint-selection diagnosis raised by R6. It uses the same
-data, split, model, seed, learning rate, and anomaly weight 0.5 as R6, but
-requires at least 50 training epochs and retains separate validation
-checkpoints for combined objective, RMSE, anomaly loss, and change correlation.
+R7 验证 R6 提出的检查点诊断。它保持相同数据、划分、模型、随机种子、学习率和异常损失权重 `0.5`，只增加最少 50 轮训练和多指标检查点。
 
-## Controlled change from R6
+## 受控改动
 
-| Setting | R6 | R7 |
+| 设置 | R6 | R7 |
 | --- | ---: | ---: |
-| Minimum epochs | 0 | 50 |
-| Early-stopping patience | 20 | 20 after minimum period |
-| Saved checkpoints | One combined-objective checkpoint | Four validation criteria + last |
-| Change-anomaly weight | 0.5 | 0.5 |
-| Learning rate | 0.001 | 0.001 |
+| 最少训练轮数 | 0 | 50 |
+| 早停 patience | 20 | 最少轮数后再计 20 |
+| 检查点 | 单一 `best.pt` | 最佳目标、RMSE、异常、相关性和最后一轮 |
+| 异常损失权重 | 0.5 | 0.5 |
+| 学习率 | 0.001 | 0.001 |
 
-The first 22 validation-objective values are exactly identical between R6 and
-R7. Therefore the later improvement is caused by continuing the same training
-trajectory, not by an untracked configuration or random-seed change.
+R6 与 R7 前 22 轮的验证组合损失逐项完全一致。因此 R7 的后期改善来自同一训练轨迹继续运行，而不是随机种子或配置变化。
 
-## Training behavior
+## 训练行为
 
-R7 trained for 69 epochs. Change correlation first became positive at epoch 22
-and remained positive for every subsequent epoch. The saved validation
-checkpoints reduce to two distinct best epochs:
+R7 共训练 69 轮。变化相关性在第 22 轮首次转正，此后 48 轮始终保持正数。
 
-| Validation criterion | Epoch | RMSE | Skill | Variability ratio | Change correlation |
+| 验证检查点 | 轮次 | RMSE | Skill | 变化幅度比 | 变化相关性 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Best anomaly loss | 31 | 0.236955 °C | +0.36% | 0.278254 | **+0.226349** |
-| Best change correlation | 31 | 0.236955 °C | +0.36% | 0.278254 | **+0.226349** |
-| Best combined objective | 47 | **0.228436 °C** | **+3.95%** | 0.261239 | +0.193554 |
-| Best RMSE | 47 | **0.228436 °C** | **+3.95%** | 0.261239 | +0.193554 |
-| Last epoch | 69 | 0.242427 °C | -1.94% | 0.274299 | +0.216011 |
+| 最佳异常损失 | 31 | 0.236955 ℃ | +0.36% | 0.278254 | **+0.226349** |
+| 最佳变化相关性 | 31 | 0.236955 ℃ | +0.36% | 0.278254 | **+0.226349** |
+| 最佳组合目标 | 47 | **0.228436 ℃** | **+3.95%** | 0.261239 | +0.193554 |
+| 最佳 RMSE | 47 | **0.228436 ℃** | **+3.95%** | 0.261239 | +0.193554 |
+| 最后一轮 | 69 | 0.242427 ℃ | -1.94% | 0.274299 | +0.216011 |
 
-The minimum training period exposes the delayed spatial-learning phase. Later
-training is not uniformly better: after epoch 47, stronger spatial variation
-is accompanied by increasing warm bias and worse whole-field accuracy. The
-multi-checkpoint policy preserves both sides of this trade-off.
+第 47 轮以后，空间变化仍较强，但暖偏差逐渐增大，整体误差恶化。更久训练并非一定更好，多检查点正确保留了不同目标的取舍。
 
-## Test result by checkpoint
+## 不同检查点的测试结果
 
-| Checkpoint | Epoch | RMSE | MAE | Skill | Bias | Variability ratio | Correlation |
+| 检查点 | 轮次 | RMSE | MAE | Skill | Bias | 变化幅度比 | 相关性 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Best anomaly | 31 | 0.277698 °C | 0.187046 °C | -0.60% | +0.104392 °C | 0.264625 | **+0.223955** |
-| Best correlation | 31 | 0.277698 °C | 0.187046 °C | -0.60% | +0.104392 °C | 0.264625 | **+0.223955** |
-| Best objective | 47 | **0.268501 °C** | **0.175043 °C** | **+2.73%** | **+0.067203 °C** | 0.260590 | +0.185919 |
-| Best RMSE | 47 | **0.268501 °C** | **0.175043 °C** | **+2.73%** | **+0.067203 °C** | 0.260590 | +0.185919 |
-| Last | 69 | 0.285490 °C | 0.195135 °C | -3.43% | +0.120818 °C | **0.279011** | +0.208675 |
+| 最佳异常 | 31 | 0.277698 ℃ | 0.187046 ℃ | -0.60% | +0.104392 ℃ | 0.264625 | **+0.223955** |
+| 最佳相关性 | 31 | 0.277698 ℃ | 0.187046 ℃ | -0.60% | +0.104392 ℃ | 0.264625 | **+0.223955** |
+| 最佳组合目标 | 47 | **0.268501 ℃** | **0.175043 ℃** | **+2.73%** | **+0.067203 ℃** | 0.260590 | +0.185919 |
+| 最佳 RMSE | 47 | **0.268501 ℃** | **0.175043 ℃** | **+2.73%** | **+0.067203 ℃** | 0.260590 | +0.185919 |
+| 最后一轮 | 69 | 0.285490 ℃ | 0.195135 ℃ | -3.43% | +0.120818 ℃ | **0.279011** | +0.208675 |
 
-Epoch 47 is the primary R7 result. It is the only retained model that combines
-clearly positive test skill with substantial, positively correlated local
-change. Epoch 31 is useful as a spatial-structure diagnostic but falls slightly
-below persistence on test data. Epoch 69 demonstrates late degradation and
-must not be selected.
+第 47 轮是 R7 正式主结果：它是保留检查点中唯一同时具有明确正 Skill、较强变化幅度和正相关性的模型。第 31 轮适合作为空间诊断，但测试 RMSE 略差于 persistence；第 69 轮说明后期已经退化。
 
-## Comparison with the main earlier results
+## 与主要实验比较
 
-| Experiment | RMSE | Skill | Variability ratio | Change correlation |
+| 模型 | RMSE | Skill | 变化幅度比 | 变化相关性 |
 | --- | ---: | ---: | ---: | ---: |
-| R3: accuracy-oriented, weight 0 | **0.266321 °C** | **+3.52%** | 0.003840 | -0.074835 |
-| R4: spatial reference, weight 1.0 | 0.270073 °C | +2.16% | 0.233842 | **+0.201355** |
-| R7: balanced, weight 0.5 | 0.268501 °C | +2.73% | **0.260590** | +0.185919 |
-| Persistence | 0.276034 °C | 0% | — | — |
+| R3：精度导向 | **0.266321 ℃** | **+3.52%** | 0.003840 | -0.074835 |
+| R4：空间结构导向 | 0.270073 ℃ | +2.16% | 0.233842 | **+0.201355** |
+| R7：综合折中 | 0.268501 ℃ | +2.73% | **0.260590** | +0.185919 |
+| Persistence | 0.276034 ℃ | 0% | — | — |
 
-Relative to R3, R7 sacrifices only 0.82% RMSE while increasing the change
-variability ratio by a factor of 67.9 and changing correlation from negative to
-positive. Relative to R4, R7 improves RMSE by 0.58 percentage points in relative
-terms and skill by 0.57 percentage points, with slightly lower correlation but
-stronger predicted variability.
+相对 R3，R7 仅牺牲 0.82% RMSE，却把变化幅度提高约 67.9 倍，并把相关性由负变正。相对 R4，R7 的 RMSE 改善 0.58%，Skill 提高 0.57 个百分点，变化幅度更强，相关性仅略低。
 
-## Scientific conclusion
+## 本实验得到的经验与最终结论
 
-Whole-field next-day SST accuracy and local daily-change dynamics are learned
-on different time scales. The early checkpoint used by R5/R6 captures a useful
-domain-mean correction but misses delayed spatial learning. Minimum training
-epochs plus validation-only multi-checkpoint selection reveal a balanced model
-that remains better than persistence while no longer collapsing to a spatially
-constant change.
+1. 最少训练轮数确实揭示了旧早停错过的延迟空间学习阶段。
+2. 多指标检查点是必要的，因为最佳空间结构、最佳整体误差和最后一轮不是同一个模型。
+3. 第 31 轮说明只追求相关性会牺牲平均预测；第 69 轮说明继续训练会产生暖偏和整体退化。
+4. R3 仍是整体精度上限，R7 第 47 轮是本项目最好的综合模型。
+5. 当前结论只适用于 2020 年划分和 seed 42；多种子、多年份属于后续稳健性扩展。
 
-R3 remains the best accuracy-only model. R7 is the best overall compromise and
-the recommended main result. Claims are currently limited to the 2020 split and
-seed 42; multi-seed or multi-year tests would be robustness extensions rather
-than prerequisites for closing this small reproduction project.
+## 文件
 
-## Files
+- `config.json`：R7 完整配置；
+- `history.csv`：69 轮损失、指标和最佳标记；
+- `evaluation_best_objective/`：第 47 轮指标与图片；
+- `evaluation_best_rmse/`：第 47 轮指标与图片；
+- `evaluation_best_anomaly/`：第 31 轮指标与图片；
+- `evaluation_best_correlation/`：第 31 轮指标与图片；
+- `evaluation_last/`：第 69 轮指标与图片。
 
-- `config.json`: exact R7 configuration
-- `history.csv`: all 69 epochs, component losses, metrics, and checkpoint flags
-- `evaluation_best_objective/`: epoch-47 metrics and maps
-- `evaluation_best_rmse/`: epoch-47 metrics and maps
-- `evaluation_best_anomaly/`: epoch-31 metrics and maps
-- `evaluation_best_correlation/`: epoch-31 metrics and maps
-- `evaluation_last/`: epoch-69 metrics and maps
-
-Large model checkpoint files remain outside Git.
+大型模型权重未纳入 Git。

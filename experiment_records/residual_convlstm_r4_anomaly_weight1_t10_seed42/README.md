@@ -1,108 +1,69 @@
-# Residual ConvLSTM R4: local-change anomaly loss, weight 1.0
+# R4：局部日变化异常损失（权重 1.0）
 
-R4 tests whether an auxiliary local daily-change loss can prevent the residual
-ConvLSTM from collapsing to an almost spatially uniform correction. It keeps
-the R3 data, split, architecture, initialization, learning rate, mask, and seed
-fixed, and changes only the training objective.
+R4 检验局部日变化异常损失能否缓解 R3 的空间常数解。除损失函数外，数据、划分、模型、初始化、学习率、掩码和随机种子都与 R3 相同。
 
-## Controlled change from R3
-
-| Setting | R3 | R4 |
-| --- | ---: | ---: |
-| Local change-anomaly weight | 0 | 1.0 |
-| Residual readout initialization std | 0.001 | 0.001 |
-| Learning rate | 0.001 | 0.001 |
-| LR scheduler | None | None |
-
-For every sample, the auxiliary term subtracts the ocean-wide mean daily change
-from both predicted and observed daily changes, then compares their remaining
-local anomalies:
+## 受控改动
 
 ```text
-daily change = next-day SST - final input-day SST
-local anomaly = daily change - ocean mean daily change
-objective = forecast MSE + 1.0 * local-anomaly MSE
+日变化 = 下一日海温 - 最后一个输入日海温
+局部异常 = 日变化 - 当天海洋格点平均日变化
+总损失 = 海温预测 MSE + 1.0 × 局部异常 MSE
 ```
 
-## Training behavior
-
-Training ran for 47 epochs. The best combined validation objective occurred at
-epoch 27; early stopping then activated after 20 epochs without improvement.
-The daily-change correlation first became positive at epoch 22, showing that
-the spatial component took substantially longer to emerge than the mean
-correction.
-
-| Validation statistic | Value |
-| --- | ---: |
-| Best combined-objective epoch | 27 |
-| RMSE at epoch 27 | 0.229927 °C |
-| Skill at epoch 27 | +3.32% |
-| Change variability ratio at epoch 27 | 0.259581 |
-| Change correlation at epoch 27 | +0.215319 |
-| Total epochs | 47 |
-
-Epoch 47 had a slightly lower validation RMSE of 0.229000 °C, but a slightly
-higher combined objective because its anomaly loss was worse. Therefore the
-saved checkpoint is correctly epoch 27 under the R4 multi-objective selection
-rule.
-
-## Test result
-
-| Metric | R3 | R4 | Persistence |
-| --- | ---: | ---: | ---: |
-| RMSE | **0.266321 °C** | 0.270073 °C | 0.276034 °C |
-| MAE | **0.172299 °C** | 0.177451 °C | 0.181800 °C |
-| Skill vs. persistence | **+3.52%** | +2.16% | 0% |
-| Bias | +0.035944 °C | +0.078063 °C | — |
-
-R4 remains better than persistence, but relative to R3 its RMSE worsens by
-1.41%, its MAE worsens by 2.99%, and its skill falls by 1.36 percentage points.
-R3 remains the best whole-field forecast so far.
-
-## Daily-change diagnosis
-
-| Diagnostic | R3 | R4 |
+| 设置 | R3 | R4 |
 | --- | ---: | ---: |
-| Observed mean daily change | -0.081247 °C | -0.081247 °C |
-| Predicted mean daily change | -0.045302 °C | -0.003184 °C |
-| Observed daily-change std | 0.263807 °C | 0.263807 °C |
-| Predicted daily-change std | 0.001013 °C | 0.061689 °C |
-| Predicted/observed variability ratio | 0.003840 | **0.233842** |
-| Daily-change correlation | -0.074835 | **+0.201355** |
+| 异常损失权重 | 0 | 1.0 |
+| 残差头初始化 std | 0.001 | 0.001 |
+| 学习率 | 0.001 | 0.001 |
+| 调度器 | 无 | 无 |
 
-The local-change variability ratio improves by a factor of 60.9 and the
-correlation changes from negative to positive. The maps also change from an
-almost uniform correction to smooth, position-dependent warm/cool structures.
-This confirms that the new loss directly addresses the spatial-collapse
-failure found in R3.
+## 训练行为
 
-However, R4 almost completely misses the test period's domain-wide cooling.
-That raises the warm bias and explains the loss of whole-field accuracy. A
-weight of 1.0 therefore places too much emphasis on local structure for the
-desired balance, even though it provides a useful positive-skill result.
+R4 共训练 47 轮，最佳组合目标位于第 27 轮。变化相关性在第 22 轮首次转正，说明局部空间结构的学习明显晚于平均升降温。
 
-## Conclusion and next sweep
+| 第 27 轮验证指标 | 数值 |
+| --- | ---: |
+| RMSE | 0.229927 ℃ |
+| Skill | +3.32% |
+| 变化幅度比 | 0.259581 |
+| 变化相关性 | +0.215319 |
 
-R4 validates the local-anomaly-loss hypothesis but exposes a trade-off between
-whole-field accuracy and spatial dynamics. The next controlled experiments use
-the same code and configuration with intermediate weights:
+第 47 轮的验证 RMSE 略低，但局部异常损失略高，所以旧版单一组合目标仍选择第 27 轮。
 
-| Experiment | Change-anomaly weight | Purpose |
-| --- | ---: | --- |
-| R3 | 0 | Whole-field reference |
-| R5 | 0.25 | Accuracy-oriented compromise |
-| R6 | 0.5 | Stronger spatial compromise |
-| R4 | 1.0 | Spatial-structure reference |
+## 测试结果
 
-R5 and R6 may run concurrently on two idle GPUs. They must retain the same
-seed, split, model, initialization, and learning rate so the weight remains the
-only changed variable.
+| 指标 | R3 | R4 | Persistence |
+| --- | ---: | ---: | ---: |
+| RMSE | **0.266321 ℃** | 0.270073 ℃ | 0.276034 ℃ |
+| MAE | **0.172299 ℃** | 0.177451 ℃ | 0.181800 ℃ |
+| Skill | **+3.52%** | +2.16% | 0% |
+| Bias | +0.035944 ℃ | +0.078063 ℃ | — |
 
-## Files
+R4 仍然超过 persistence，但相对 R3，RMSE 恶化 1.41%、MAE 恶化 2.99%。
 
-- `config.json`: exact R4 configuration
-- `history.csv`: 47 training epochs and all validation diagnostics
-- `metrics.json`: test metrics and daily-change diagnostics
-- `examples.png`: SST, daily-change, and absolute-error maps
+## 空间变化改善
 
-The large model checkpoint remains outside Git.
+| 指标 | R3 | R4 |
+| --- | ---: | ---: |
+| 预测平均变化 | -0.045302 ℃ | -0.003184 ℃ |
+| 预测变化标准差 | 0.001013 ℃ | 0.061689 ℃ |
+| 变化幅度比 | 0.003840 | **0.233842** |
+| 变化相关性 | -0.074835 | **+0.201355** |
+
+异常损失使变化幅度比提高约 60.9 倍，并把相关性由负转正；预测图首次出现连续的红蓝空间结构。这验证了 R3 的主要瓶颈确实是局部变化目标不足。
+
+同时，R4 几乎没有预测出测试期整体降温，导致暖偏差增大。权重 1.0 对局部结构强调过强，不是最好的精度与空间折中。
+
+## 本实验得到的经验
+
+1. 局部异常损失能够实质性缓解空间变化塌缩。
+2. 变化幅度、相关性和整体 RMSE 之间存在多目标取舍。
+3. 不能只追求更强的红蓝纹理；如果平均升降温错误，整体误差仍会恶化。
+4. 下一步应测试 0.25 和 0.5 等中间权重。
+
+## 文件
+
+- `config.json`：R4 配置；
+- `history.csv`：47 轮训练历史；
+- `metrics.json`：测试指标；
+- `examples.png`：空间变化和误差图。
