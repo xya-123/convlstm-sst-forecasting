@@ -1,0 +1,64 @@
+{
+  "data": "/home/dataDisk/sn/xya/convlstm-sst-data/processed/sst_2020_east_china_sea.npz",
+  "start_date": null,
+  "model": "residual-convlstm",
+  "normalization": "minmax",
+  "loss_mask": "ocean",
+  "seq_len": 10,
+  "train_ratio": 0.7,
+  "val_ratio": 0.2,
+  "batch_size": 4,
+  "hidden_dims": [
+    16,
+    16
+  ],
+  "cnn_hidden_dim": 32,
+  "kernel_size": 3,
+  "residual_readout_init_std": 0.001,
+  "epochs": 200,
+  "patience": 20,
+  "min_epochs": 50,
+  "learning_rate": 0.001,
+  "lr_scheduler": "none",
+  "lr_patience": 6,
+  "lr_factor": 0.5,
+  "min_learning_rate": 1e-05,
+  "weight_decay": 0.0,
+  "change_anomaly_weight": 0.5,
+  "num_workers": 4,
+  "seed": 42,
+  "device": "cuda",
+  "amp": true,
+  "output_root": "/home/dataDisk/sn/xya/convlstm-sst-runs",
+  "run_name": "residual-convlstm-r7-multicheckpoint-weight05-t10-seed42",
+  "run_dir": "/home/dataDisk/sn/xya/convlstm-sst-runs/residual-convlstm-r7-multicheckpoint-weight05-t10-seed42",
+  "device_resolved": "cuda",
+  "amp_enabled": true,
+  "model_config": {
+    "input_dim": 1,
+    "hidden_dims": [
+      16,
+      16
+    ],
+    "kernel_size": 3,
+    "readout_init_std": 0.001
+  },
+  "split": {
+    "n_days": 366,
+    "seq_len": 10,
+    "train_end": 256,
+    "val_end": 329,
+    "train_ratio": 0.7,
+    "val_ratio": 0.2
+  },
+  "scaler": {
+    "method": "minmax",
+    "offset": -1.7999999523162842,
+    "scale": 34.619998931884766
+  },
+  "sample_counts": {
+    "train": 246,
+    "val": 73,
+    "test": 37
+  }
+}
