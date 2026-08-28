@@ -1,0 +1,13 @@
+{
+  "rmse_celsius": 0.28410642201480485,
+  "mae_celsius": 0.18812568838913674,
+  "persistence_rmse_celsius": 0.2760344313516729,
+  "skill_vs_persistence": -0.029242694918910628,
+  "ocean_pixel_count": 206090.0,
+  "checkpoint": "/home/dataDisk/sn/xya/convlstm-sst-runs/convlstm-minmax-t10-seed42/best.pt",
+  "data": "/home/dataDisk/sn/xya/convlstm-sst-data/processed/sst_2020_east_china_sea.npz",
+  "model": "convlstm",
+  "normalization": "minmax",
+  "loss_mask": "ocean",
+  "best_epoch": 160
+}
