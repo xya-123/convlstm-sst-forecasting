@@ -1,0 +1,19 @@
+{
+  "rmse_celsius": 0.2681211478413579,
+  "mae_celsius": 0.17360037493100708,
+  "bias_celsius": 0.040007630826269,
+  "persistence_rmse_celsius": 0.2760344313516729,
+  "persistence_mae_celsius": 0.18180023390304298,
+  "skill_vs_persistence": 0.028667740729174995,
+  "rmse_improvement_percent": 2.8667740729174995,
+  "ocean_pixel_count": 206090,
+  "checkpoint": "/home/dataDisk/sn/xya/convlstm-sst-runs/residual-convlstm-minmax-t10-seed42/best.pt",
+  "data": "/home/dataDisk/sn/xya/convlstm-sst-data/processed/sst_2020_east_china_sea.npz",
+  "model": "residual-convlstm",
+  "normalization": "minmax",
+  "loss_mask": "ocean",
+  "best_epoch": 10,
+  "test_sample_count": 37,
+  "test_start_date": "2020-11-25",
+  "test_end_date": "2020-12-31"
+}
