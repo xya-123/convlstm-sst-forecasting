@@ -169,6 +169,14 @@ def main() -> None:
             "training_change_anomaly_weight": float(
                 checkpoint.get("change_anomaly_weight", 0.0)
             ),
+            "training_min_epochs": int(checkpoint.get("min_epochs", 0)),
+            "training_patience": int(checkpoint.get("patience", 0)),
+            "checkpoint_criterion": str(
+                checkpoint.get("checkpoint_criterion", "objective")
+            ),
+            "checkpoint_epoch": int(
+                checkpoint.get("checkpoint_epoch", checkpoint["best_epoch"])
+            ),
             "best_epoch": int(checkpoint["best_epoch"]),
             "test_sample_count": len(test_dataset),
             "test_start_date": str(loaded.dates[int(split["val_end"])]),
@@ -176,11 +184,17 @@ def main() -> None:
         }
     )
 
-    output_dir = ensure_directory(args.output_dir or args.checkpoint.parent / "evaluation")
+    output_dir = ensure_directory(
+        args.output_dir or args.checkpoint.parent / f"evaluation_{args.checkpoint.stem}"
+    )
     write_json(output_dir / "metrics.json", result)
     if examples:
         plot_examples(examples, output_dir / "examples.png")
 
+    print(
+        f"Checkpoint:       criterion={result['checkpoint_criterion']}, "
+        f"epoch={result['checkpoint_epoch']}"
+    )
     print(f"Model RMSE:       {result['rmse_celsius']:.4f} degC")
     print(f"Model MAE:        {result['mae_celsius']:.4f} degC")
     print(f"Model bias:       {result['bias_celsius']:+.4f} degC")

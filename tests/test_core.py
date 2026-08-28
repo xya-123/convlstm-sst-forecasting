@@ -21,7 +21,12 @@ from sst_forecasting.models import (
     build_model,
 )
 from prepare_data import collect_daily_files
-from train import forecast_loss_components, make_lr_scheduler
+from train import (
+    forecast_loss_components,
+    make_lr_scheduler,
+    metric_improved,
+    update_early_stopping_wait,
+)
 
 
 class DataTests(unittest.TestCase):
@@ -190,6 +195,35 @@ class MetricTests(unittest.TestCase):
 
 
 class TrainingUtilityTests(unittest.TestCase):
+    def test_metric_improvement_handles_modes_and_nan(self) -> None:
+        self.assertTrue(metric_improved(0.9, 1.0, "min"))
+        self.assertTrue(metric_improved(0.2, 0.1, "max"))
+        self.assertFalse(metric_improved(float("nan"), 1.0, "min"))
+
+    def test_min_epochs_delays_patience_count(self) -> None:
+        wait = 0
+        for epoch in range(1, 50):
+            wait = update_early_stopping_wait(
+                epoch, min_epochs=50, objective_improved=False, current_wait=wait
+            )
+        self.assertEqual(wait, 0)
+
+        for epoch in range(50, 69):
+            wait = update_early_stopping_wait(
+                epoch, min_epochs=50, objective_improved=False, current_wait=wait
+            )
+        self.assertEqual(wait, 19)
+        wait = update_early_stopping_wait(
+            69, min_epochs=50, objective_improved=False, current_wait=wait
+        )
+        self.assertEqual(wait, 20)
+
+    def test_objective_improvement_resets_early_stopping_wait(self) -> None:
+        wait = update_early_stopping_wait(
+            55, min_epochs=50, objective_improved=True, current_wait=7
+        )
+        self.assertEqual(wait, 0)
+
     def test_composite_forecast_loss_respects_anomaly_weight(self) -> None:
         persistence = torch.zeros(1, 1, 1, 3)
         target = torch.tensor([[[[-1.0, 0.0, 1.0]]]])

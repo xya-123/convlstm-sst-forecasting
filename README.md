@@ -158,9 +158,14 @@ python train.py \
 
 ```text
 outputs/convlstm-minmax-t10-seed42/
-├── best.pt       # 验证集最优模型
-├── config.json   # 完整实验配置
-└── history.csv   # 每轮训练和验证指标
+├── best.pt                    # 最佳组合目标，兼容旧命令
+├── best_objective.pt          # 最佳组合目标
+├── best_rmse.pt               # 最佳验证 RMSE
+├── best_anomaly.pt            # 最佳局部异常损失
+├── best_correlation.pt        # 最佳变化相关性
+├── last.pt                    # 训练最后一轮
+├── config.json                # 完整实验配置
+└── history.csv                # 每轮训练、验证指标和最佳标记
 ```
 
 ## 9. 训练普通卷积基线
@@ -310,6 +315,41 @@ python train.py \
 R4 的最佳检查点、学习率调度（若启用）和早停均依据验证集“总损失”，测试集仍不参与
 模型选择。
 
+### R7：修复早停与多检查点诊断
+
+R5/R6 表明整体平均变化通常在前几轮学会，而局部空间结构需要二十轮以上才开始出现。
+只保存最佳组合损失会丢失后期空间能力。修订后的训练器支持 `--min-epochs`，并同时
+保存最佳组合目标、RMSE、异常损失、变化相关性和最后一轮模型。
+
+首先保持 R6 的权重 `0.5`，只改变训练与保存机制：
+
+```bash
+python train.py \
+  --data data/processed/sst_2020_east_china_sea.npz \
+  --model residual-convlstm \
+  --residual-readout-init-std 1e-3 \
+  --normalization minmax \
+  --loss-mask ocean \
+  --change-anomaly-weight 0.5 \
+  --seq-len 10 \
+  --batch-size 4 \
+  --hidden-dims 16 16 \
+  --epochs 200 \
+  --min-epochs 50 \
+  --patience 20 \
+  --learning-rate 1e-3 \
+  --lr-scheduler none \
+  --num-workers 4 \
+  --seed 42 \
+  --device cuda \
+  --amp \
+  --output-root /home/dataDisk/sn/xya/convlstm-sst-runs \
+  --run-name residual-convlstm-r7-multicheckpoint-weight05-t10-seed42
+```
+
+评估多个检查点时，每个检查点默认写入独立目录，例如
+`evaluation_best_rmse/` 和 `evaluation_best_correlation/`，不会相互覆盖。
+
 ## 11. 测试与持续性基线
 
 ```bash
@@ -422,5 +462,5 @@ ConvLSTM 参考实现：
 - 已发现：R6 到第 22 轮时验证变化相关性已由负转正且异常损失仍在改善，
   但单一组合损失早停并未保留该阶段模型；
 - 当前目标：增加最小训练轮数，并分别保存最佳总目标、RMSE、异常损失、
-  变化相关性和最后一轮检查点，再重跑权重 0.5；
+  变化相关性和最后一轮检查点，再用最少 50 轮重跑权重 0.5；
 - 后续目标：进行归一化、掩码和时间窗口消融实验。

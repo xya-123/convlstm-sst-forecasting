@@ -48,6 +48,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--patience", type=int, default=20)
+    parser.add_argument(
+        "--min-epochs",
+        type=int,
+        default=0,
+        help=(
+            "Minimum completed epochs before early-stopping patience starts. "
+            "Zero preserves the original behavior."
+        ),
+    )
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument(
         "--lr-scheduler",
@@ -268,10 +277,76 @@ def save_history(path: Path, history: list[dict[str, float | int]]) -> None:
         writer.writerows(history)
 
 
+def metric_improved(value: float, best: float, mode: str) -> bool:
+    """Return whether a finite validation value improves the tracked best."""
+
+    if not math.isfinite(value):
+        return False
+    if mode == "min":
+        return value < best - 1e-10
+    if mode == "max":
+        return value > best + 1e-10
+    raise ValueError(f"Unknown metric comparison mode: {mode}")
+
+
+def update_early_stopping_wait(
+    epoch: int,
+    min_epochs: int,
+    objective_improved: bool,
+    current_wait: int,
+) -> int:
+    """Count patience only after the minimum training period has been reached."""
+
+    if objective_improved or epoch < min_epochs:
+        return 0
+    return current_wait + 1
+
+
+def make_checkpoint(
+    model: torch.nn.Module,
+    args: argparse.Namespace,
+    model_config: dict[str, Any],
+    sst_scaler: SSTScaler,
+    split: dict[str, int | float],
+    epoch: int,
+    criterion: str,
+    val_losses: dict[str, float],
+    val_metrics: dict[str, float | int],
+) -> dict[str, Any]:
+    """Build a self-describing evaluation checkpoint for one validation criterion."""
+
+    return {
+        "model_state": model.state_dict(),
+        "model_name": args.model,
+        "model_config": model_config,
+        "scaler": sst_scaler.state_dict(),
+        "split": split,
+        "normalization": args.normalization,
+        "loss_mask": args.loss_mask,
+        "change_anomaly_weight": args.change_anomaly_weight,
+        "min_epochs": args.min_epochs,
+        "patience": args.patience,
+        "epochs_requested": args.epochs,
+        "data_path": str(args.data),
+        "start_date": args.start_date,
+        "seed": args.seed,
+        "checkpoint_criterion": criterion,
+        "checkpoint_epoch": epoch,
+        # Kept for compatibility with existing evaluation code and checkpoints.
+        "best_epoch": epoch,
+        "best_val_loss": val_losses["objective"],
+        "best_val_forecast_mse": val_losses["forecast_mse"],
+        "best_val_change_anomaly_mse": val_losses["change_anomaly_mse"],
+        "best_val_metrics": val_metrics,
+    }
+
+
 def main() -> None:
     args = parse_args()
     if args.batch_size < 1 or args.epochs < 1 or args.patience < 1:
         raise ValueError("batch-size, epochs, and patience must be positive.")
+    if args.min_epochs < 0 or args.min_epochs > args.epochs:
+        raise ValueError("min-epochs must be between 0 and epochs.")
     if args.learning_rate <= 0 or args.weight_decay < 0:
         raise ValueError("learning-rate must be positive and weight-decay cannot be negative.")
     if args.change_anomaly_weight < 0:
@@ -342,8 +417,19 @@ def main() -> None:
     print(f"Parameters: {sum(parameter.numel() for parameter in model.parameters()):,}")
 
     history: list[dict[str, float | int]] = []
-    best_val_loss = math.inf
-    best_epoch = 0
+    criterion_modes = {
+        "objective": "min",
+        "rmse": "min",
+        "anomaly": "min",
+        "correlation": "max",
+    }
+    best_values = {
+        "objective": math.inf,
+        "rmse": math.inf,
+        "anomaly": math.inf,
+        "correlation": -math.inf,
+    }
+    best_epochs = {name: 0 for name in criterion_modes}
     epochs_without_improvement = 0
 
     for epoch in range(1, args.epochs + 1):
@@ -368,6 +454,16 @@ def main() -> None:
             args.change_anomaly_weight,
         )
         val_loss = val_losses["objective"]
+        criterion_values = {
+            "objective": val_loss,
+            "rmse": float(val_metrics["rmse_celsius"]),
+            "anomaly": val_losses["change_anomaly_mse"],
+            "correlation": float(val_metrics["daily_change_correlation"]),
+        }
+        improvements = {
+            name: metric_improved(value, best_values[name], criterion_modes[name])
+            for name, value in criterion_values.items()
+        }
         row = {
             "epoch": float(epoch),
             "learning_rate": learning_rate,
@@ -379,6 +475,10 @@ def main() -> None:
             ],
             "val_forecast_mse_normalized": val_losses["forecast_mse"],
             "val_change_anomaly_mse_normalized": val_losses["change_anomaly_mse"],
+            "is_best_objective": int(improvements["objective"]),
+            "is_best_rmse": int(improvements["rmse"]),
+            "is_best_anomaly": int(improvements["anomaly"]),
+            "is_best_correlation": int(improvements["correlation"]),
             **val_metrics,
         }
         history.append(row)
@@ -402,41 +502,64 @@ def main() -> None:
                     f"{next_learning_rate:.2e}"
                 )
 
-        if val_loss < best_val_loss - 1e-10:
-            best_val_loss = val_loss
-            best_epoch = epoch
-            epochs_without_improvement = 0
-            torch.save(
-                {
-                    "model_state": model.state_dict(),
-                    "model_name": args.model,
-                    "model_config": model_config,
-                    "scaler": sst_scaler.state_dict(),
-                    "split": split,
-                    "normalization": args.normalization,
-                    "loss_mask": args.loss_mask,
-                    "change_anomaly_weight": args.change_anomaly_weight,
-                    "data_path": str(args.data),
-                    "start_date": args.start_date,
-                    "seed": args.seed,
-                    "best_epoch": best_epoch,
-                    "best_val_loss": best_val_loss,
-                    "best_val_forecast_mse": val_losses["forecast_mse"],
-                    "best_val_change_anomaly_mse": val_losses[
-                        "change_anomaly_mse"
-                    ],
-                    "best_val_metrics": val_metrics,
-                },
-                run_dir / "best.pt",
+        for criterion, improved in improvements.items():
+            if not improved:
+                continue
+            best_values[criterion] = criterion_values[criterion]
+            best_epochs[criterion] = epoch
+            checkpoint = make_checkpoint(
+                model,
+                args,
+                model_config,
+                sst_scaler,
+                split,
+                epoch,
+                criterion,
+                val_losses,
+                val_metrics,
             )
-        else:
-            epochs_without_improvement += 1
-            if epochs_without_improvement >= args.patience:
-                print(f"Early stopping after {args.patience} epochs without improvement.")
-                break
+            torch.save(checkpoint, run_dir / f"best_{criterion}.pt")
+            if criterion == "objective":
+                # Backward-compatible alias used by the existing commands.
+                torch.save(checkpoint, run_dir / "best.pt")
 
-    print(f"Best epoch: {best_epoch}; best validation loss: {best_val_loss:.6f}")
-    print(f"Checkpoint: {run_dir / 'best.pt'}")
+        torch.save(
+            make_checkpoint(
+                model,
+                args,
+                model_config,
+                sst_scaler,
+                split,
+                epoch,
+                "last",
+                val_losses,
+                val_metrics,
+            ),
+            run_dir / "last.pt",
+        )
+
+        epochs_without_improvement = update_early_stopping_wait(
+            epoch,
+            args.min_epochs,
+            improvements["objective"],
+            epochs_without_improvement,
+        )
+        if epochs_without_improvement >= args.patience:
+            print(
+                f"Early stopping after epoch {epoch}: no objective improvement for "
+                f"{args.patience} eligible epochs (min_epochs={args.min_epochs})."
+            )
+            break
+
+    print("Best validation checkpoints:")
+    for criterion in criterion_modes:
+        print(
+            f"  {criterion}: epoch {best_epochs[criterion]}, "
+            f"value={best_values[criterion]:.6f}, "
+            f"file={run_dir / f'best_{criterion}.pt'}"
+        )
+    print(f"Backward-compatible objective checkpoint: {run_dir / 'best.pt'}")
+    print(f"Final epoch checkpoint: {run_dir / 'last.pt'}")
 
 
 if __name__ == "__main__":
