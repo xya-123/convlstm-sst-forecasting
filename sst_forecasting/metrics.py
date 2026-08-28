@@ -17,6 +17,43 @@ def masked_mse(
     return (((prediction - target) ** 2) * mask).sum() / denominator
 
 
+def masked_spatial_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """Per-sample mean over selected channel and spatial positions."""
+
+    if values.shape != mask.shape:
+        raise ValueError(
+            f"values and mask must have identical shapes, got {values.shape} and {mask.shape}."
+        )
+    if values.ndim < 2:
+        raise ValueError("values must include a batch dimension and at least one feature dimension.")
+
+    mask = mask.to(dtype=values.dtype)
+    reduce_dims = tuple(range(1, values.ndim))
+    denominator = mask.sum(dim=reduce_dims, keepdim=True).clamp_min(1.0)
+    return (values * mask).sum(dim=reduce_dims, keepdim=True) / denominator
+
+
+def masked_change_anomaly_mse(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    persistence: torch.Tensor,
+    mask: torch.Tensor,
+) -> torch.Tensor:
+    """MSE of local daily-change anomalies after removing each sample's mean change.
+
+    The ordinary forecast MSE rewards a spatially uniform correction when most of
+    the domain warms or cools together. This term removes that domain-mean change
+    separately from the prediction and observation, leaving only the local
+    warm/cool pattern to compare.
+    """
+
+    predicted_change = prediction - persistence
+    observed_change = target - persistence
+    predicted_anomaly = predicted_change - masked_spatial_mean(predicted_change, mask)
+    observed_anomaly = observed_change - masked_spatial_mean(observed_change, mask)
+    return masked_mse(predicted_anomaly, observed_anomaly, mask)
+
+
 @dataclass
 class MetricAccumulator:
     squared_error: float = 0.0

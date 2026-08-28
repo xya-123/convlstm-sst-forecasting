@@ -266,7 +266,49 @@ python train.py \
 ```
 
 `--residual-readout-init-std 0` 保留原来的严格持续性初始化，可用于复现 R1/R2。
-R3 与 R1 只有残差头初始化不同；若 R3 有效，再在 R4 中单独加入延迟学习率衰减。
+R3 与 R1 只有残差头初始化不同。
+
+### R4：增加局部日变化异常损失
+
+R3 的整体 RMSE 和 Skill 已经优于持续性预测，但预测日变化的空间标准差只有真实值的
+约 0.384%，说明改进主要来自接近全海域一致的平均降温修正。R4 保持 R3 的模型、
+初始化、学习率和数据划分不变，只增加局部日变化异常损失：
+
+```text
+日变化 = 下一日海温 - 最后一个输入日海温
+局部异常 = 日变化 - 当天海洋格点的平均日变化
+总损失 = 海温预测 MSE + 权重 × 局部异常 MSE
+```
+
+推荐先用权重 `1.0` 做单变量对照：
+
+```bash
+python train.py \
+  --data data/processed/sst_2020_east_china_sea.npz \
+  --model residual-convlstm \
+  --residual-readout-init-std 1e-3 \
+  --normalization minmax \
+  --loss-mask ocean \
+  --change-anomaly-weight 1.0 \
+  --seq-len 10 \
+  --batch-size 4 \
+  --hidden-dims 16 16 \
+  --epochs 200 \
+  --patience 20 \
+  --learning-rate 1e-3 \
+  --lr-scheduler none \
+  --num-workers 4 \
+  --seed 42 \
+  --device cuda \
+  --amp \
+  --output-root /home/dataDisk/sn/xya/convlstm-sst-runs \
+  --run-name residual-convlstm-r4-anomaly-loss-t10-seed42
+```
+
+`--change-anomaly-weight 0` 完全关闭新损失并复现旧训练目标。训练历史会分别记录总目标、
+原始预测 MSE 和局部异常 MSE，便于判断空间结构改善是否以整体 RMSE 变差为代价。
+R4 的最佳检查点、学习率调度（若启用）和早停均依据验证集“总损失”，测试集仍不参与
+模型选择。
 
 ## 11. 测试与持续性基线
 
@@ -310,6 +352,7 @@ Skill < 0：模型不如直接使用最后一天
 | R1 | Residual ConvLSTM | Min-Max | 有 | 10 |
 | R2 | Residual ConvLSTM + LR 衰减 | Min-Max | 有 | 10 |
 | R3 | Residual ConvLSTM + 小随机残差头 | Min-Max | 有 | 10 |
+| R4 | R3 + 局部日变化异常损失 | Min-Max | 有 | 10 |
 
 掩码消融实验使用：
 
@@ -368,5 +411,7 @@ ConvLSTM 参考实现：
 - 已完成：可信 ConvLSTM 基线，测试 RMSE 0.2841℃，未超过持续性基线 0.2760℃；
 - 已完成：R1 Residual ConvLSTM 获得 +2.87% 测试 Skill，但预测日变化幅度偏弱；
 - 已完成：R2 低初始学习率实验失败，测试 Skill -2.20%，变化幅度比仅 0.011；
-- 当前目标：R3 恢复学习率 0.001，并用极小随机残差头启动主干梯度；
+- 已完成：R3 用极小随机残差头获得当前最佳 RMSE 0.2663℃ 和 +3.52% Skill，
+  但日变化空间幅度仍严重塌缩；
+- 当前目标：R4 保持 R3 设置，增加局部日变化异常损失，改善空间变化结构；
 - 后续目标：进行归一化、掩码和时间窗口消融实验。

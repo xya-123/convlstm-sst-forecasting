@@ -8,7 +8,12 @@ import numpy as np
 import torch
 
 from sst_forecasting.data import SSTScaler, build_datasets
-from sst_forecasting.metrics import MetricAccumulator, masked_mse
+from sst_forecasting.metrics import (
+    MetricAccumulator,
+    masked_change_anomaly_mse,
+    masked_mse,
+    masked_spatial_mean,
+)
 from sst_forecasting.models import (
     CNNForecaster,
     ConvLSTMForecaster,
@@ -16,7 +21,7 @@ from sst_forecasting.models import (
     build_model,
 )
 from prepare_data import collect_daily_files
-from train import make_lr_scheduler
+from train import forecast_loss_components, make_lr_scheduler
 
 
 class DataTests(unittest.TestCase):
@@ -122,6 +127,30 @@ class MetricTests(unittest.TestCase):
         mask = torch.tensor([[[[True, False]]]])
         self.assertAlmostEqual(float(masked_mse(prediction, target, mask)), 1.0)
 
+    def test_masked_spatial_mean_is_computed_per_sample(self) -> None:
+        values = torch.tensor([[[[1.0, 3.0]]], [[[10.0, 20.0]]]])
+        mask = torch.tensor([[[[True, True]]], [[[True, False]]]])
+        means = masked_spatial_mean(values, mask)
+        self.assertEqual(tuple(means.shape), (2, 1, 1, 1))
+        self.assertTrue(torch.allclose(means.flatten(), torch.tensor([2.0, 10.0])))
+
+    def test_change_anomaly_loss_ignores_uniform_daily_correction(self) -> None:
+        persistence = torch.zeros(1, 1, 1, 3)
+        target = torch.tensor([[[[-1.0, 0.0, 1.0]]]])
+        prediction = target + 2.0
+        mask = torch.ones_like(target, dtype=torch.bool)
+        loss = masked_change_anomaly_mse(prediction, target, persistence, mask)
+        self.assertAlmostEqual(float(loss), 0.0)
+        self.assertAlmostEqual(float(masked_mse(prediction, target, mask)), 4.0)
+
+    def test_change_anomaly_loss_detects_missing_local_pattern(self) -> None:
+        persistence = torch.zeros(1, 1, 1, 3)
+        target = torch.tensor([[[[-1.0, 0.0, 1.0]]]])
+        prediction = torch.zeros_like(target)
+        mask = torch.ones_like(target, dtype=torch.bool)
+        loss = masked_change_anomaly_mse(prediction, target, persistence, mask)
+        self.assertAlmostEqual(float(loss), 2.0 / 3.0)
+
     def test_accumulator_compares_model_and_persistence_on_same_mask(self) -> None:
         prediction = torch.tensor([[[[2.0, 100.0]]]])
         target = torch.tensor([[[[1.0, 0.0]]]])
@@ -161,6 +190,27 @@ class MetricTests(unittest.TestCase):
 
 
 class TrainingUtilityTests(unittest.TestCase):
+    def test_composite_forecast_loss_respects_anomaly_weight(self) -> None:
+        persistence = torch.zeros(1, 1, 1, 3)
+        target = torch.tensor([[[[-1.0, 0.0, 1.0]]]])
+        prediction = torch.zeros_like(target)
+        mask = torch.ones_like(target, dtype=torch.bool)
+
+        unweighted = forecast_loss_components(
+            prediction, target, persistence, mask, change_anomaly_weight=0.0
+        )
+        weighted = forecast_loss_components(
+            prediction, target, persistence, mask, change_anomaly_weight=1.0
+        )
+
+        self.assertAlmostEqual(
+            float(unweighted["objective"]), float(unweighted["forecast_mse"])
+        )
+        self.assertAlmostEqual(
+            float(weighted["objective"]),
+            float(weighted["forecast_mse"] + weighted["change_anomaly_mse"]),
+        )
+
     def test_plateau_scheduler_reduces_learning_rate(self) -> None:
         parameter = torch.nn.Parameter(torch.tensor(1.0))
         optimizer = torch.optim.Adam([parameter], lr=3e-4)

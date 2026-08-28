@@ -10,7 +10,11 @@ import torch
 from torch.utils.data import DataLoader
 
 from sst_forecasting.data import SSTScaler, build_datasets, load_sst_data
-from sst_forecasting.metrics import MetricAccumulator, masked_mse
+from sst_forecasting.metrics import (
+    MetricAccumulator,
+    masked_change_anomaly_mse,
+    masked_mse,
+)
 from sst_forecasting.models import build_model
 from sst_forecasting.utils import ensure_directory, resolve_device, set_reproducible_seed, write_json
 
@@ -55,6 +59,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr-factor", type=float, default=0.5)
     parser.add_argument("--min-learning-rate", type=float, default=1e-5)
     parser.add_argument("--weight-decay", type=float, default=0.0)
+    parser.add_argument(
+        "--change-anomaly-weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Weight for local daily-change anomaly MSE. Zero reproduces the original "
+            "forecast-MSE objective; 1.0 gives equal weight to the local-pattern term."
+        ),
+    )
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="auto")
@@ -110,6 +123,25 @@ def selected_mask(ocean_mask: torch.Tensor, mode: str) -> torch.Tensor:
     return torch.ones_like(ocean_mask, dtype=torch.bool)
 
 
+def forecast_loss_components(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    persistence: torch.Tensor,
+    mask: torch.Tensor,
+    change_anomaly_weight: float,
+) -> dict[str, torch.Tensor]:
+    forecast_mse = masked_mse(prediction, target, mask)
+    change_anomaly_mse = masked_change_anomaly_mse(
+        prediction, target, persistence, mask
+    )
+    objective = forecast_mse + change_anomaly_weight * change_anomaly_mse
+    return {
+        "objective": objective,
+        "forecast_mse": forecast_mse,
+        "change_anomaly_mse": change_anomaly_mse,
+    }
+
+
 def train_one_epoch(
     model: torch.nn.Module,
     loader: DataLoader,
@@ -118,9 +150,14 @@ def train_one_epoch(
     device: torch.device,
     use_amp: bool,
     loss_mask_mode: str,
-) -> float:
+    change_anomaly_weight: float,
+) -> dict[str, float]:
     model.train()
-    squared_error = 0.0
+    accumulated = {
+        "objective": 0.0,
+        "forecast_mse": 0.0,
+        "change_anomaly_mse": 0.0,
+    }
     selected_count = 0
 
     for x, y, ocean_mask, _ in loader:
@@ -132,16 +169,25 @@ def train_one_epoch(
         optimizer.zero_grad(set_to_none=True)
         with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
             prediction = model(x)
-            loss = masked_mse(prediction, y, mask)
-        amp_scaler.scale(loss).backward()
+            losses = forecast_loss_components(
+                prediction,
+                y,
+                x[:, -1],
+                mask,
+                change_anomaly_weight,
+            )
+        amp_scaler.scale(losses["objective"]).backward()
         amp_scaler.step(optimizer)
         amp_scaler.update()
 
         count = int(mask.sum().item())
-        squared_error += float(loss.item()) * count
+        for name, loss in losses.items():
+            accumulated[name] += float(loss.item()) * count
         selected_count += count
 
-    return squared_error / max(selected_count, 1)
+    return {
+        name: value / max(selected_count, 1) for name, value in accumulated.items()
+    }
 
 
 @torch.no_grad()
@@ -152,9 +198,14 @@ def validate(
     device: torch.device,
     use_amp: bool,
     loss_mask_mode: str,
-) -> tuple[float, dict[str, float | int]]:
+    change_anomaly_weight: float,
+) -> tuple[dict[str, float], dict[str, float | int]]:
     model.eval()
-    normalized_squared_error = 0.0
+    accumulated = {
+        "objective": 0.0,
+        "forecast_mse": 0.0,
+        "change_anomaly_mse": 0.0,
+    }
     selected_count = 0
     metrics = MetricAccumulator()
 
@@ -166,10 +217,17 @@ def validate(
 
         with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
             prediction = model(x)
-            loss = masked_mse(prediction, y, mask)
+            losses = forecast_loss_components(
+                prediction,
+                y,
+                x[:, -1],
+                mask,
+                change_anomaly_weight,
+            )
 
         count = int(mask.sum().item())
-        normalized_squared_error += float(loss.item()) * count
+        for name, loss in losses.items():
+            accumulated[name] += float(loss.item()) * count
         selected_count += count
 
         prediction_real = sst_scaler.inverse_tensor(prediction.float())
@@ -177,7 +235,10 @@ def validate(
         persistence_real = sst_scaler.inverse_tensor(x[:, -1].float())
         metrics.update(prediction_real, target_real, persistence_real, ocean_mask)
 
-    return normalized_squared_error / max(selected_count, 1), metrics.compute()
+    averaged = {
+        name: value / max(selected_count, 1) for name, value in accumulated.items()
+    }
+    return averaged, metrics.compute()
 
 
 def create_loaders(
@@ -213,6 +274,8 @@ def main() -> None:
         raise ValueError("batch-size, epochs, and patience must be positive.")
     if args.learning_rate <= 0 or args.weight_decay < 0:
         raise ValueError("learning-rate must be positive and weight-decay cannot be negative.")
+    if args.change_anomaly_weight < 0:
+        raise ValueError("change-anomaly-weight cannot be negative.")
     if args.residual_readout_init_std < 0:
         raise ValueError("residual-readout-init-std cannot be negative.")
     if args.model != "residual-convlstm" and args.residual_readout_init_std != 0:
@@ -285,17 +348,37 @@ def main() -> None:
 
     for epoch in range(1, args.epochs + 1):
         learning_rate = float(optimizer.param_groups[0]["lr"])
-        train_loss = train_one_epoch(
-            model, loaders["train"], optimizer, amp_scaler, device, use_amp, args.loss_mask
+        train_losses = train_one_epoch(
+            model,
+            loaders["train"],
+            optimizer,
+            amp_scaler,
+            device,
+            use_amp,
+            args.loss_mask,
+            args.change_anomaly_weight,
         )
-        val_loss, val_metrics = validate(
-            model, loaders["val"], sst_scaler, device, use_amp, args.loss_mask
+        val_losses, val_metrics = validate(
+            model,
+            loaders["val"],
+            sst_scaler,
+            device,
+            use_amp,
+            args.loss_mask,
+            args.change_anomaly_weight,
         )
+        val_loss = val_losses["objective"]
         row = {
             "epoch": float(epoch),
             "learning_rate": learning_rate,
-            "train_loss_normalized": train_loss,
+            "train_loss_normalized": train_losses["objective"],
             "val_loss_normalized": val_loss,
+            "train_forecast_mse_normalized": train_losses["forecast_mse"],
+            "train_change_anomaly_mse_normalized": train_losses[
+                "change_anomaly_mse"
+            ],
+            "val_forecast_mse_normalized": val_losses["forecast_mse"],
+            "val_change_anomaly_mse_normalized": val_losses["change_anomaly_mse"],
             **val_metrics,
         }
         history.append(row)
@@ -303,7 +386,9 @@ def main() -> None:
 
         print(
             f"Epoch {epoch:03d} | lr={learning_rate:.2e} | "
-            f"train={train_loss:.6f} | val={val_loss:.6f} | "
+            f"train={train_losses['objective']:.6f} | val={val_loss:.6f} | "
+            f"val_mse={val_losses['forecast_mse']:.6f} | "
+            f"val_anom={val_losses['change_anomaly_mse']:.6f} | "
             f"RMSE={val_metrics['rmse_celsius']:.4f} degC | "
             f"skill={val_metrics['skill_vs_persistence']:.4f}"
         )
@@ -330,11 +415,17 @@ def main() -> None:
                     "split": split,
                     "normalization": args.normalization,
                     "loss_mask": args.loss_mask,
+                    "change_anomaly_weight": args.change_anomaly_weight,
                     "data_path": str(args.data),
                     "start_date": args.start_date,
                     "seed": args.seed,
                     "best_epoch": best_epoch,
                     "best_val_loss": best_val_loss,
+                    "best_val_forecast_mse": val_losses["forecast_mse"],
+                    "best_val_change_anomaly_mse": val_losses[
+                        "change_anomaly_mse"
+                    ],
+                    "best_val_metrics": val_metrics,
                 },
                 run_dir / "best.pt",
             )

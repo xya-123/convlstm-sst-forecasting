@@ -166,6 +166,9 @@ def main() -> None:
             "model": checkpoint["model_name"],
             "normalization": checkpoint["normalization"],
             "loss_mask": checkpoint["loss_mask"],
+            "training_change_anomaly_weight": float(
+                checkpoint.get("change_anomaly_weight", 0.0)
+            ),
             "best_epoch": int(checkpoint["best_epoch"]),
             "test_sample_count": len(test_dataset),
             "test_start_date": str(loaded.dates[int(split["val_end"])]),
